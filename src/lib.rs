@@ -4,6 +4,23 @@
 //!
 //! This is a **motion planning** crate. It is named `sampling-planning` because the crate name `motion-planning` was already taken on crates.io.
 //!
+//! ## Building blocks
+//!
+//! A [`Problem`] bundles everything a planner needs:
+//!
+//! - a [`StateSpace`] with a metric and interpolation, for example [`Euclidean`];
+//! - a [`Sampler`] that draws states, for example [`UniformBox`];
+//! - a [`ValidityChecker`] for states and motions, which answers with a three-valued
+//!   [`Validity`]. Planners accept only [`Validity::Valid`]; [`Validity::Unknown`] is rejected
+//!   like [`Validity::Invalid`];
+//! - a [`Steering`] function, for example [`StraightLine`];
+//! - a start state and a [`GoalRegion`].
+//!
+//! Planners keep their nodes in a [`NearestNeighbors`] structure, [`LinearScan`] by default.
+//! Randomness always comes from a caller-provided [`rand_core::Rng`], so a seeded RNG makes a
+//! run fully reproducible. Float math goes through `libm`, so results are also identical across
+//! platforms.
+//!
 //! ## Planned scope
 //!
 //! - Tree expansion: RRT, RRT*, RRT#
@@ -14,20 +31,28 @@
 //!
 //! ## Status
 //!
-//! Pre-release. Version 0.0.0 reserves the name; the API is not started yet and will change.
+//! Pre-release. Building blocks only so far; the API will change.
 //!
 //! Repository: <https://github.com/sunsided/sampling-planning>
 
 #![no_std]
+#![forbid(unsafe_code)]
 
-/// A continuous configuration space.
-pub trait StateSpace {
-    /// A configuration.
-    type State;
+extern crate alloc;
 
-    /// The distance between two configurations.
-    fn distance(&self, from: &Self::State, to: &Self::State) -> f64;
+mod goal;
+mod nearest;
+mod problem;
+mod sampler;
+mod space;
+mod steering;
+mod validity;
 
-    /// The configuration at fraction `t` in `[0, 1]` of the way from `from` to `to`.
-    fn interpolate(&self, from: &Self::State, to: &Self::State, t: f64) -> Self::State;
-}
+pub use goal::GoalRegion;
+pub use nearest::{LinearScan, NearestNeighbors};
+pub use problem::{Path, Problem};
+pub use rand_core;
+pub use sampler::{Sampler, UniformBox, unit_f64};
+pub use space::{Euclidean, StateSpace};
+pub use steering::{Steering, StraightLine};
+pub use validity::{Validity, ValidityChecker, discretized_motion};

@@ -1,0 +1,3 @@
+doc-valid-idents = ["LaValle", ".."]
+too-many-lines-threshold = 60
+cognitive-complexity-threshold = 15
