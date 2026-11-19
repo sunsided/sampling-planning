@@ -1,4 +1,4 @@
-# sampling-planning
+# sampling-planning: motion planning for Rust
 
 Motion planning with sampling-based planners: RRT, RRT*, PRM, FMT* and SST.
 

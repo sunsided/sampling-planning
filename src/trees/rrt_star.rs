@@ -21,15 +21,20 @@ pub struct RrtStarConfig {
     /// Asymptotic optimality needs `gamma` above [`RrtStarConfig::gamma_lower_bound`].
     /// Positive and finite.
     pub gamma: f64,
+    /// Upper bound on the connection radius, `eta` in Karaman and Frazzoli. Usually the
+    /// steering step, so that no edge is longer than one steering step. Positive; may be
+    /// infinite.
+    pub max_radius: f64,
 }
 
 impl RrtStarConfig {
-    /// Creates a config with the given radius constant and a goal bias of 5 %.
+    /// Creates a config with the given radius constant and radius cap, and a goal bias of 5 %.
     #[must_use]
-    pub const fn new(gamma: f64) -> Self {
+    pub const fn new(gamma: f64, max_radius: f64) -> Self {
         Self {
             goal_bias: 0.05,
             gamma,
+            max_radius,
         }
     }
 
@@ -59,6 +64,8 @@ pub struct RrtStar<Sp: StateSpace, Sa, C, St, N = LinearScan<<Sp as StateSpace>:
     growth: Growth<Sp, Sa, C, St, N>,
     /// The connection radius constant; positive and finite.
     gamma: f64,
+    /// Upper bound on the connection radius; positive, may be infinite.
+    max_radius: f64,
     /// Reused buffer for neighbor queries, to avoid an allocation per iteration.
     near: Vec<usize>,
 }
@@ -77,6 +84,7 @@ where
     /// - [`Error::InvalidStart`] if the start state is not valid.
     /// - [`Error::GoalBiasOutOfRange`] if the goal bias is not in `[0, 1]`.
     /// - [`Error::InvalidGamma`] if `gamma` is not positive and finite.
+    /// - [`Error::InvalidMaxRadius`] if `max_radius` is not positive.
     pub fn new(problem: Problem<Sp, Sa, C, St>, config: RrtStarConfig) -> Result<Self, Error> {
         Self::with_nearest_neighbors(problem, config, LinearScan::default())
     }
@@ -97,6 +105,7 @@ where
     /// - [`Error::InvalidStart`] if the start state is not valid.
     /// - [`Error::GoalBiasOutOfRange`] if the goal bias is not in `[0, 1]`.
     /// - [`Error::InvalidGamma`] if `gamma` is not positive and finite.
+    /// - [`Error::InvalidMaxRadius`] if `max_radius` is not positive.
     pub fn with_nearest_neighbors(
         problem: Problem<Sp, Sa, C, St>,
         config: RrtStarConfig,
@@ -106,9 +115,14 @@ where
             return Err(Error::InvalidGamma);
         }
 
+        if config.max_radius.is_nan() || config.max_radius <= 0.0 {
+            return Err(Error::InvalidMaxRadius);
+        }
+
         Ok(Self {
             growth: Growth::new(problem, config.goal_bias, nn)?,
             gamma: config.gamma,
+            max_radius: config.max_radius,
             near: Vec::new(),
         })
     }
@@ -134,13 +148,13 @@ where
         true
     }
 
-    /// The connection radius for the next node: `gamma * (ln n / n)^(1/d)`, with `n` counting
-    /// the new node.
+    /// The connection radius for the next node: `min(gamma * (ln n / n)^(1/d), max_radius)`,
+    /// with `n` counting the new node.
     fn radius(&self) -> f64 {
         let n = count_to_f64(self.growth.tree.len() + 1);
         let d = count_to_f64(self.growth.problem.space.dimension().max(1));
 
-        self.gamma * libm::pow(libm::log(n) / n, 1.0 / d)
+        (self.gamma * libm::pow(libm::log(n) / n, 1.0 / d)).min(self.max_radius)
     }
 
     /// The cheapest parent for `new` among `nearest` and `near`, with its resulting cost.

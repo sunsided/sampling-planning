@@ -54,7 +54,7 @@
 //!
 //! let mut rng = rand_pcg::Pcg64Mcg::seed_from_u64(7);
 //! let gamma = 1.5 * RrtStarConfig::gamma_lower_bound(2, 100.0);
-//! let mut planner = RrtStar::new(problem, RrtStarConfig::new(gamma)).expect("valid problem");
+//! let mut planner = RrtStar::new(problem, RrtStarConfig::new(gamma, 1.0)).expect("valid problem");
 //! planner.run(2000, &mut rng);
 //!
 //! let path = planner.best_path().expect("free space has a path");

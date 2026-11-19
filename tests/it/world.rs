@@ -62,7 +62,8 @@ pub fn problem(checker: Boxes) -> World2d {
 }
 
 /// Asserts that `path` solves `world`: it starts at the start, ends in the goal, stays in the
-/// sampling box, every segment checks as valid, and its cost is its length.
+/// sampling box, every segment checks as valid and is at most one steering step long, and its
+/// cost is its length.
 pub fn assert_solves(world: &World2d, path: &Path<[f64; 2]>) {
     let states = &path.states;
     assert_eq!(states.first(), Some(&world.start));
@@ -80,6 +81,7 @@ pub fn assert_solves(world: &World2d, path: &Path<[f64; 2]>) {
     for pair in states.windows(2) {
         let validity = world.checker.check_motion(&world.space, &pair[0], &pair[1]);
         assert_eq!(validity, Validity::Valid, "segment {pair:?}");
+        assert!(world.space.distance(&pair[0], &pair[1]) <= world.steering.max_step() + 1e-9);
         length += world.space.distance(&pair[0], &pair[1]);
     }
 

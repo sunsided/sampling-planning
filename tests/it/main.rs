@@ -12,7 +12,7 @@ use world::{Boxes, World2d, assert_solves, problem, slalom};
 
 /// An RRT* config whose radius constant is safe for the 10 x 10 world.
 fn star_config() -> RrtStarConfig {
-    RrtStarConfig::new(1.5 * RrtStarConfig::gamma_lower_bound(2, 100.0))
+    RrtStarConfig::new(1.5 * RrtStarConfig::gamma_lower_bound(2, 100.0), 1.0)
 }
 
 /// Runs RRT* on `world` for `iterations` iterations with the given seed.
@@ -125,7 +125,11 @@ fn bad_config_is_rejected() {
         Some(Error::GoalBiasOutOfRange)
     );
     assert_eq!(
-        RrtStar::new(slalom(), RrtStarConfig::new(0.0)).err(),
+        RrtStar::new(slalom(), RrtStarConfig::new(0.0, 1.0)).err(),
         Some(Error::InvalidGamma)
+    );
+    assert_eq!(
+        RrtStar::new(slalom(), RrtStarConfig::new(1.0, f64::NAN)).err(),
+        Some(Error::InvalidMaxRadius)
     );
 }

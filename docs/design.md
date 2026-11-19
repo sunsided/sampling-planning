@@ -156,8 +156,10 @@ solution. Incremental stepping makes anytime behaviour (RRT* cost over
 iterations) observable without re-running.
 
 RRT* uses the radius variant with
-`r(n) = gamma * (ln n / n)^(1/d)` (Karaman and Frazzoli 2011). The planner
-takes `gamma` from the config. Asymptotic optimality needs
+`r(n) = min(gamma * (ln n / n)^(1/d), eta)` (Karaman and Frazzoli 2011). The
+planner takes `gamma` and the cap `eta` (`max_radius`, usually the steering
+step) from the config; the cap keeps every edge within one steering step,
+which matters for reachable-set edge checks. Asymptotic optimality needs
 `gamma > (2 (1 + 1/d))^(1/d) (mu(X_free) / zeta_d)^(1/d)`, where `zeta_d` is
 the volume of the unit `d`-ball; the docs on `RrtStarConfig` spell this out.
 When a node is rewired, the costs of all its descendants are recomputed, so
@@ -175,6 +177,9 @@ Decision: depend on `rand_core` (0.10, `default-features = false`) and take
 - A tiny internal PRNG would avoid the dependency but force users onto our
   generator and re-invent seeding. It would also make it awkward to share one
   RNG with the rest of an application.
+- Cost: `rand_core::Rng` is part of the public API, so `rand_core` major
+  bumps (0.9 `RngCore` to 0.10 `Rng`) are breaking changes here too. The
+  crate re-exports `rand_core` so users can name the exact version it uses.
 - Uniform floats are built from the top 52 bits of `next_u64` (mantissa
   fill), so sampling is bit-for-bit reproducible across platforms and does not
   need `rand`'s distributions.

@@ -67,7 +67,7 @@ fn main() {
     let rrt_path = rrt.solve(20_000, &mut Pcg64Mcg::seed_from_u64(seed));
 
     let gamma = 1.5 * RrtStarConfig::gamma_lower_bound(2, 100.0);
-    let mut star = RrtStar::new(problem(), RrtStarConfig::new(gamma)).expect("start is free");
+    let mut star = RrtStar::new(problem(), RrtStarConfig::new(gamma, 1.0)).expect("start is free");
     star.run(5000, &mut Pcg64Mcg::seed_from_u64(seed));
     let star_path = star.best_path();
 

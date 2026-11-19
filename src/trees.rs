@@ -34,6 +34,8 @@ pub enum Error {
     GoalBiasOutOfRange,
     /// The RRT* radius constant `gamma` is not positive and finite.
     InvalidGamma,
+    /// The RRT* radius cap is not positive.
+    InvalidMaxRadius,
 }
 
 impl fmt::Display for Error {
@@ -42,6 +44,7 @@ impl fmt::Display for Error {
             Self::InvalidStart(validity) => write!(f, "start state is not valid ({validity:?})"),
             Self::GoalBiasOutOfRange => f.write_str("goal bias must be in [0, 1]"),
             Self::InvalidGamma => f.write_str("gamma must be positive and finite"),
+            Self::InvalidMaxRadius => f.write_str("max radius must be positive"),
         }
     }
 }
