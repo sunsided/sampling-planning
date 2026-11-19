@@ -14,7 +14,15 @@ This is a **motion planning** crate. It is named `sampling-planning` because the
 
 ## Status
 
-Pre-release. Version 0.0.0 reserves the name; the API is not started yet and will change.
+Pre-release. RRT and RRT* work in Euclidean spaces with a uniform box sampler, linear-scan
+nearest neighbors and straight-line steering. Validity checks are three-valued (valid,
+invalid, unknown); planners treat unknown as invalid. The API will change.
+
+See [docs/design.md](docs/design.md) for the design and milestones, and run the example:
+
+```sh
+cargo run --release --example obstacles_2d
+```
 
 ## License
 
