@@ -21,6 +21,46 @@
 //! run fully reproducible. Float math goes through `libm`, so results are also identical across
 //! platforms.
 //!
+//! ## Example
+//!
+//! ```
+//! use rand_core::SeedableRng;
+//! use sampling_planning::{
+//!     Euclidean, GoalRegion, Problem, StraightLine, UniformBox, Validity, ValidityChecker,
+//!     trees::{RrtStar, RrtStarConfig},
+//! };
+//!
+//! /// Free space everywhere.
+//! struct Free;
+//!
+//! impl ValidityChecker<Euclidean<2>> for Free {
+//!     fn check_state(&self, _: &[f64; 2]) -> Validity {
+//!         Validity::Valid
+//!     }
+//!
+//!     fn check_motion(&self, _: &Euclidean<2>, _: &[f64; 2], _: &[f64; 2]) -> Validity {
+//!         Validity::Valid
+//!     }
+//! }
+//!
+//! let problem = Problem {
+//!     space: Euclidean::<2>,
+//!     sampler: UniformBox::new([0.0, 0.0], [10.0, 10.0]),
+//!     checker: Free,
+//!     steering: StraightLine::new(1.0),
+//!     start: [1.0, 1.0],
+//!     goal: GoalRegion::new([9.0, 9.0], 0.5),
+//! };
+//!
+//! let mut rng = rand_pcg::Pcg64Mcg::seed_from_u64(7);
+//! let gamma = 1.5 * RrtStarConfig::gamma_lower_bound(2, 100.0);
+//! let mut planner = RrtStar::new(problem, RrtStarConfig::new(gamma)).expect("valid problem");
+//! planner.run(2000, &mut rng);
+//!
+//! let path = planner.best_path().expect("free space has a path");
+//! assert!(path.cost < 12.0);
+//! ```
+//!
 //! ## Planned scope
 //!
 //! - Tree expansion: RRT, RRT*, RRT#
@@ -31,7 +71,7 @@
 //!
 //! ## Status
 //!
-//! Pre-release. Building blocks only so far; the API will change.
+//! Pre-release. RRT and RRT* in Euclidean spaces work; the API will change.
 //!
 //! Repository: <https://github.com/sunsided/sampling-planning>
 
@@ -46,6 +86,7 @@ mod problem;
 mod sampler;
 mod space;
 mod steering;
+pub mod trees;
 mod validity;
 
 pub use goal::GoalRegion;
