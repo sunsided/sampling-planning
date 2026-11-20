@@ -1,6 +1,7 @@
 //! # Sampling-based motion planning
 //!
-//! Motion planning with sampling-based planners: RRT, RRT*, PRM, FMT* and SST.
+//! Motion planning with sampling-based planners: RRT, RRT*, RRT-Connect, PRM, PRM*, FMT*, SST
+//! and SST*.
 //!
 //! This is a **motion planning** crate. It is named `sampling-planning` because the crate name `motion-planning` was already taken on crates.io.
 //!
@@ -16,7 +17,8 @@
 //! - a [`Steering`] function, for example [`StraightLine`];
 //! - a start state and a [`GoalRegion`].
 //!
-//! Planners keep their nodes in a [`NearestNeighbors`] structure, [`LinearScan`] by default.
+//! Planners keep their nodes in a [`NearestNeighbors`] structure, [`LinearScan`] by default;
+//! [`KdTree`] is much faster in low-dimensional Euclidean spaces and returns identical results.
 //! Randomness always comes from a caller-provided [`rand_core::Rng`], so a seeded RNG makes a
 //! run fully reproducible. Float math goes through `libm`, so results are also identical across
 //! platforms.
@@ -61,17 +63,25 @@
 //! assert!(path.cost < 12.0);
 //! ```
 //!
+//! ## Planners
+//!
+//! - [`trees`]: [`Rrt`](trees::Rrt), [`RrtStar`](trees::RrtStar) (optionally informed) and
+//!   the bidirectional [`RrtConnect`](trees::RrtConnect), all over a [`Problem`].
+//! - [`roadmaps`]: the multi-query [`Prm`](roadmaps::Prm) (PRM, PRM*, lazy PRM) and the batch
+//!   planner [`FmtStar`](roadmaps::FmtStar). They need no steering function.
+//! - [`kinodynamic`]: [`Sst`](kinodynamic::Sst) (SST and SST*) over a
+//!   [`Propagator`](kinodynamic::Propagator) that forward-simulates controls.
+//!
+//! [`shortcut`] and [`shortcut_random`] post-process any [`Path`].
+//!
 //! ## Planned scope
 //!
-//! - Tree expansion: RRT, RRT*, RRT#
-//! - Batch-informed: BIT*, AIT*, ABIT*, EIT*
-//! - Roadmaps: PRM, PRM*, SPARS, SPARS2
-//! - Fast marching: FMT*, BFMT*
-//! - Kinodynamic: SST, SST*, KPIECE
+//! RRT#, BIT*, AIT*, ABIT*, EIT*, SPARS, SPARS2, BFMT*, KPIECE, and more state spaces (SO(2),
+//! SE(2), SE(3), compound spaces).
 //!
 //! ## Status
 //!
-//! Pre-release. RRT and RRT* in Euclidean spaces work; the API will change.
+//! Pre-release; the API will change.
 //!
 //! Repository: <https://github.com/sunsided/sampling-planning>
 

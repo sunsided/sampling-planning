@@ -1,16 +1,20 @@
 # sampling-planning: motion planning for Rust
 
-Motion planning with sampling-based planners: RRT, RRT*, PRM, FMT* and SST.
+Motion planning with sampling-based planners: RRT, RRT*, RRT-Connect, PRM, PRM*, FMT*, SST
+and SST*.
 
 This is a **motion planning** crate. It is named `sampling-planning` because the crate name `motion-planning` was already taken on crates.io.
 
 ## Planned scope
 
-- Tree expansion: RRT, RRT*, RRT#
-- Batch-informed: BIT*, AIT*, ABIT*, EIT*
-- Roadmaps: PRM, PRM*, SPARS, SPARS2
-- Fast marching: FMT*, BFMT*
-- Kinodynamic: SST, SST*, KPIECE
+Not implemented yet:
+
+- Tree expansion: RRT#
+- Batch-informed: BIT*, AIT*, ABIT*, EIT*, and direct ellipsoid sampling for informed planners
+- Roadmaps: SPARS, SPARS2, k-nearest PRM*
+- Fast marching: BFMT*
+- Kinodynamic: KPIECE
+- State spaces: SO(2), SE(2), SE(3), compound spaces
 
 ## Status
 

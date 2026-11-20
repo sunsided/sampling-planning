@@ -8,18 +8,18 @@ for continuous configuration spaces. It is not a task planner. The name
 
 | Module | Planners |
 | --- | --- |
-| `trees` | RRT, RRT*, RRT# |
-| `informed` | BIT*, AIT*, ABIT*, EIT* |
-| `roadmaps` | PRM, PRM*, SPARS, SPARS2, FMT*, BFMT* |
-| `kinodynamic` | SST, SST*, KPIECE |
+| `trees` | RRT, RRT*, Informed RRT*, RRT-Connect; later RRT# |
+| `informed` | later: BIT*, AIT*, ABIT*, EIT* |
+| `roadmaps` | PRM, PRM*, lazy PRM, FMT*; later SPARS, SPARS2, BFMT* |
+| `kinodynamic` | SST, SST*; later KPIECE |
 
 FMT* and BFMT* build a roadmap-like sample set and march over it, so they
 live in `roadmaps` until they need their own module.
 
 Shared infrastructure sits at the crate root: state spaces, samplers,
 validity checking, nearest-neighbor structures, steering, goals and the
-problem definition. A module is created only when its first planner lands;
-milestone 1 has only `trees`.
+problem definition, plus path shortcutting. A module is created only when its
+first planner lands; `informed` does not exist yet.
 
 ## Traits
 
@@ -120,8 +120,19 @@ pub trait NearestNeighbors<Sp: StateSpace> {
 Ids are the planner's node ids, so the structure needs no back-pointers.
 Ties break toward the earliest inserted state, which keeps runs reproducible.
 `within_radius` writes into a caller buffer to avoid an allocation per
-iteration. Milestone 1 ships `LinearScan`. Later: k-nearest queries (for
-k-nearest RRT*/PRM*), a k-d tree for Euclidean spaces and GNAT for general
+iteration.
+
+Shipped: `LinearScan` (any metric) and `KdTree<N>` (only for `Euclidean<N>`).
+The k-d tree compares the same `distance` values as the linear scan and pads
+its pruning bound by a relative `1e-9`, so both return identical ids; a test
+cross-checks them on inputs full of exact ties. It is incremental and never
+rebalances, which is fine for random insertions.
+
+`RemovableNeighbors: NearestNeighbors` adds `remove(id)` as a separate trait,
+so only planners that need deletion (SST's active set) require it. Both
+structures implement it (the k-d tree with tombstones).
+
+Later: k-nearest queries (for k-nearest RRT*/PRM*) and GNAT for general
 metrics.
 
 ### `Steering`
@@ -164,6 +175,56 @@ which matters for reachable-set edge checks. Asymptotic optimality needs
 the volume of the unit `d`-ball; the docs on `RrtStarConfig` spell this out.
 When a node is rewired, the costs of all its descendants are recomputed, so
 the cost of every node, and the best solution cost, never increases.
+
+Informed RRT* is a config flag (`RrtStarConfig::informed`). Once a solution
+of cost `c` exists, samples with `d(start, x) + d(x, center) >= c + tolerance`
+are rejected, up to `INFORMED_ATTEMPTS` draws per iteration. The tolerance
+term keeps the set admissible for a ball goal. Rejection keeps the `Sampler`
+trait unchanged and works in every space; direct sampling of the prolate
+hyperspheroid would be faster when the set is thin but needs Euclidean
+structure, so it waits for a dedicated sampler.
+
+RRT-Connect roots a second tree at the goal center. Goal-tree edges are
+traveled toward the root, so they are checked in that direction
+(`check_state(new)`, then `check_motion(new, parent)`). The trees meet when a
+steered state is at distance zero from its target, which requires `Steering`
+to return the target itself when it can reach it.
+
+### Roadmaps
+
+`Prm` and `FmtStar` take space, sampler and checker directly instead of a
+`Problem`: they have no steering, and `Prm` answers many start and goal
+pairs. Edges are direct motions along `interpolate`.
+
+- PRM uses a fixed radius, PRM* `gamma (ln n / n)^(1/d)` with
+  `gamma > 2 (1 + 1/d)^(1/d) (mu / zeta_d)^(1/d)` (Karaman and Frazzoli 2011,
+  Theorem 34). Queries attach the start and the goal center with the current
+  radius and run Dijkstra (ties by `total_cmp`, then node id).
+- Lazy PRM stores edges unchecked and checks the edges of each candidate
+  path at query time. It returns the eager cost for the same samples.
+- Roadmap edges are traveled both ways but checked once, from the older to
+  the newer node; that assumes a symmetric `check_motion`.
+  `check_both_directions` is the switch for directional checkers.
+- FMT* follows Algorithm 2 of Janson et al. 2015 with
+  `gamma > 2 (1/d)^(1/d) (mu / zeta_d)^(1/d)` (Theorem 4.1 with `eta = 0`).
+
+### Kinodynamic planners
+
+`Propagator` (control sampling, forward simulation, control dimension) and
+`KinodynamicProblem` live in `kinodynamic`. SST propagates in fixed
+integration steps and checks each step with `check_motion`. Its cost is the
+total control duration, so solutions are `Trajectory` values (states plus
+controls and durations), not `Path`. SST* shrinks both radii by `xi` after
+epoch `j`, whose length is `(1 + ln j) xi^(-(d + l + 1) j) K_0` (Li et al.
+2016, Algorithm 7). Inactive nodes stay in memory; only the active index
+forgets them.
+
+### Post-processing
+
+`shortcut` (greedy, deterministic, drops states) and `shortcut_random`
+(random cuts between points on the path) check motions in travel direction,
+never return a costlier path, and take a `max_edge` bound because shortcuts
+break the one-steering-step edge length.
 
 ## RNG strategy
 
@@ -237,14 +298,15 @@ Float math (`sqrt`, `ln`, `powf`) is not in `core`. Decision: always use
 
 ## Milestones
 
-1. **Foundations and RRT/RRT\*** (this draft): traits above, `Euclidean<N>`,
+1. **Foundations and RRT/RRT\*** (done): traits above, `Euclidean<N>`,
    `UniformBox<N>`, `LinearScan`, `StraightLine`, `GoalRegion`, RRT and RRT*
    with goal bias, 2D obstacle example, integration tests.
-2. **Roadmaps:** PRM, PRM* (lazy and eager edge checks), k-nearest queries,
-   a k-d tree.
-3. **Informed trees:** informed sampling, RRT#, BIT*, then AIT*/EIT*.
-4. **FMT\*/BFMT\*.**
-5. **Kinodynamic:** `Propagator` trait, SST/SST*, KPIECE.
+2. **Roadmaps:** PRM, PRM*, lazy PRM and the k-d tree are done; k-nearest
+   queries are open.
+3. **Informed trees:** rejection-based informed sampling and RRT-Connect are
+   done; direct ellipsoid sampling, RRT#, BIT*, then AIT*/EIT* are open.
+4. **FMT\*/BFMT\*:** FMT* is done, BFMT* is open.
+5. **Kinodynamic:** `Propagator`, SST and SST* are done, KPIECE is open.
 6. **More spaces:** SO(2), SE(2), SE(3), compound spaces.
 
 ## Cross-crate needs
@@ -266,3 +328,8 @@ Float math (`sqrt`, `ln`, `powf`) is not in `core`. Decision: always use
 - Cost objectives other than path length: separate trait, or a cost function
   on `Problem`?
 - `f64` only, or generic over the scalar (`f32` for embedded targets)?
+- PRM checks roadmap edges in one direction by default. Should directional
+  checking be the default instead (correct for reachable sets, twice the
+  checks for everyone else)?
+- SST frees nothing; should inactive leaves be dropped (needs node removal
+  from the tree and stable ids)?
