@@ -32,28 +32,22 @@ impl Neighborhood {
         }
     }
 
-    /// Replaces `out` with the ids in `nn` near `state` under this rule, excluding `id` (the
-    /// node that holds `state`). k-nearest results whose `distance` (by id) exceeds
-    /// `max_radius` are dropped.
+    /// Replaces `out` with the ids in `nn` near `state` under this rule for which `keep`
+    /// holds; callers use `keep` to drop the queried node itself and edges over the cap.
     pub(super) fn query<Sp: StateSpace, N: NearestNeighbors<Sp>>(
         self,
-        (space, nn): (&Sp, &N),
-        (id, state): (usize, &Sp::State),
-        (max_radius, distance): (f64, impl Fn(usize) -> f64),
+        space: &Sp,
+        nn: &N,
+        state: &Sp::State,
+        keep: impl Fn(usize) -> bool,
         out: &mut Vec<usize>,
     ) {
         match self {
             Self::Radius(radius) => nn.within_radius(space, state, radius, out),
-            Self::Nearest(k) => {
-                nn.k_nearest(space, state, k + 1, out);
-
-                if max_radius.is_finite() {
-                    out.retain(|&x| distance(x) <= max_radius);
-                }
-            }
+            Self::Nearest(k) => nn.k_nearest(space, state, k + 1, out),
         }
 
-        out.retain(|&x| x != id);
+        out.retain(|&x| keep(x));
     }
 }
 

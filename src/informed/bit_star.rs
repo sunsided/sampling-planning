@@ -616,12 +616,11 @@ where
     /// Replaces `out` with the vertices and samples near node `v` under this batch's rule,
     /// excluding `v`.
     fn neighbors(&self, v: usize, out: &mut Vec<usize>) {
-        self.neighborhood.query(
-            (&self.space, &self.nn),
-            (v, &self.nodes[v].state),
-            (self.config.max_radius, |x| self.edge_estimate(v, x)),
-            out,
-        );
+        let cap = self.config.max_radius;
+        let keep = |x| x != v && (cap.is_infinite() || self.edge_estimate(v, x) <= cap);
+
+        self.neighborhood
+            .query(&self.space, &self.nn, &self.nodes[v].state, keep, out);
     }
 
     /// The admissible edge cost estimate `c_hat(v, x) = d(v, x)`.

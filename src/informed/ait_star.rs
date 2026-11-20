@@ -338,9 +338,13 @@ where
     /// advances the reverse search as far as the best edge needs, then processes that edge.
     /// Returns whether the forward tree changed.
     ///
-    /// The step that starts a batch builds the batch's graph over all stored states. While
-    /// the reverse search cannot connect the start to a goal, every step is a new batch, so
-    /// budget iterations by [`AitStar::batch_count`] as well.
+    /// A batch ends at the first popped edge whose estimate cannot beat the current solution.
+    /// When the batch's graph holds no better path than the incumbent (or none at all), that
+    /// is the first edge, so every step starts a new batch: it adds up to `batch_size` states
+    /// and runs one neighbor query per stored state, which is quadratic with the
+    /// [`LinearScan`] default of [`AitStar::new`]. Use a [`KdTree`](crate::KdTree) and budget
+    /// by [`AitStar::batch_count`] as well. In free space a near-optimal run can reach 100
+    /// batches in a few hundred steps.
     pub fn step<R: Rng + ?Sized>(&mut self, rng: &mut R) -> bool {
         self.resort_if_stale();
 
@@ -486,10 +490,13 @@ where
                 continue;
             }
 
+            let cap = self.config.max_radius;
+            let keep = |x| x != id && (cap.is_infinite() || self.cost_estimate(id, x) <= cap);
             self.neighborhood.query(
-                (&self.space, &self.nn),
-                (id, &self.nodes[id].state),
-                (self.config.max_radius, |x| self.cost_estimate(id, x)),
+                &self.space,
+                &self.nn,
+                &self.nodes[id].state,
+                keep,
                 &mut near,
             );
             self.link_all(id, &near);

@@ -32,13 +32,24 @@ impl ValidityChecker<Euclidean<2>> for Wall {
 /// The planner under test.
 type Planner = AitStar<Euclidean<2>, UniformBox<2>, Wall, LinearScan<[f64; 2]>>;
 
-/// AIT* from (1, 1) to (9, 1) around [`Wall`], with small batches.
-fn planner() -> Planner {
-    let config = AitStarConfig {
+/// A radius config with small batches.
+fn radius_config() -> AitStarConfig {
+    AitStarConfig {
         batch_size: 40,
         ..AitStarConfig::new(1.5 * AitStarConfig::gamma_lower_bound(2, 100.0))
-    };
+    }
+}
 
+/// A k-nearest config with small batches.
+fn k_config() -> AitStarConfig {
+    AitStarConfig {
+        k_nearest: Some(1.5 * AitStarConfig::k_constant_lower_bound(2)),
+        ..radius_config()
+    }
+}
+
+/// AIT* from (1, 1) to (9, 1) around [`Wall`].
+fn planner(config: AitStarConfig) -> Planner {
     AitStar::new(
         Euclidean::<2>,
         UniformBox::new([0.0, 0.0], [10.0, 10.0]),
@@ -107,21 +118,68 @@ fn assert_matches(planner: &Planner, reference: &[f64], settled: impl Fn(usize) 
     compared
 }
 
-/// Steps the planner within its first batch until it has recorded `wanted` invalid edges, and
-/// returns whether some `h_con` rose on the way (an underconsistent repair).
+/// Asserts that the batch graph is symmetric and holds every forward-tree edge.
+fn assert_graph_is_symmetric_with_tree_edges(planner: &Planner) {
+    for (id, node) in planner.nodes.iter().enumerate() {
+        for &other in &node.adjacent {
+            assert!(
+                planner.nodes[other].adjacent.contains(&id),
+                "{id} - {other}"
+            );
+        }
+
+        if let Some(parent) = node.parent {
+            assert!(
+                node.adjacent.contains(&parent),
+                "tree edge {parent} -> {id}"
+            );
+        }
+    }
+}
+
+/// Asserts that the lazily settled states and, after draining the reverse queue, all live
+/// states have the exact cost-to-go.
+fn assert_reverse_search_is_exact(planner: &mut Planner) {
+    assert_graph_is_symmetric_with_tree_edges(planner);
+
+    let reference = dijkstra_to_goal(planner);
+    let top = planner
+        .peek_state()
+        .map_or(f64::INFINITY, |entry| entry.key);
+    let lazy = assert_matches(planner, &reference, |x| {
+        planner.is_consistent(x) && planner.nodes[x].h_con + planner.nodes[x].g_hat < top
+    });
+    assert!(lazy > 0, "the lazy search settled some states");
+
+    while let Some(entry) = planner.peek_state() {
+        planner.expand_state(entry.vertex);
+    }
+
+    let live = planner
+        .nodes
+        .iter()
+        .filter(|node| node.kind != Kind::Pruned)
+        .count();
+    assert_eq!(assert_matches(planner, &reference, |_| true), live);
+    assert!(reference.iter().filter(|cost| cost.is_finite()).count() > 10);
+}
+
+/// Steps the planner until it has recorded `wanted` invalid edges, and returns whether some
+/// `h_con` rose within a batch on the way (an underconsistent repair).
 fn step_until_invalid_edges(planner: &mut Planner, wanted: usize) -> bool {
     let mut rng = Pcg64Mcg::seed_from_u64(3);
     let mut rose = false;
 
     for _ in 0..5000 {
         let before: Vec<f64> = planner.nodes.iter().map(|node| node.h_con).collect();
+        let batch = planner.batch_count();
         planner.step(&mut rng);
-        assert_eq!(planner.batch_count(), 1, "the first batch is still running");
 
-        rose |= before
-            .iter()
-            .zip(&planner.nodes)
-            .any(|(&old, node)| old.is_finite() && node.h_con > old);
+        rose |= planner.batch_count() == batch
+            && before
+                .iter()
+                .zip(&planner.nodes)
+                .any(|(&old, node)| old.is_finite() && node.h_con > old);
 
         if invalid_edge_count(planner) >= wanted {
             break;
@@ -138,26 +196,33 @@ fn invalid_edge_count(planner: &Planner) -> usize {
 
 #[test]
 fn reverse_search_matches_dijkstra_after_invalid_edges() {
-    let mut planner = planner();
-    let rose = step_until_invalid_edges(&mut planner, 5);
+    for config in [radius_config(), k_config()] {
+        let mut planner = planner(config);
+        let rose = step_until_invalid_edges(&mut planner, 5);
 
-    assert!(invalid_edge_count(&planner) >= 5);
-    assert!(rose, "an invalid edge raised some cost-to-go");
-
-    let reference = dijkstra_to_goal(&planner);
-    let top = planner
-        .peek_state()
-        .map_or(f64::INFINITY, |entry| entry.key);
-    let lazy = assert_matches(&planner, &reference, |x| {
-        planner.is_consistent(x) && planner.nodes[x].h_con + planner.nodes[x].g_hat < top
-    });
-    assert!(lazy > 0, "the lazy search settled some states");
-
-    while let Some(entry) = planner.peek_state() {
-        planner.expand_state(entry.vertex);
+        assert!(invalid_edge_count(&planner) >= 5);
+        assert!(rose, "an invalid edge raised some cost-to-go");
+        assert_reverse_search_is_exact(&mut planner);
     }
+}
 
-    let drained = assert_matches(&planner, &reference, |_| true);
-    assert_eq!(drained, planner.nodes.len());
-    assert!(reference.iter().filter(|cost| cost.is_finite()).count() > 10);
+#[test]
+fn reverse_search_matches_dijkstra_in_later_batches() {
+    for config in [radius_config(), k_config()] {
+        let mut planner = planner(config);
+        let mut rng = Pcg64Mcg::seed_from_u64(4);
+
+        while planner.batch_count() < 4 {
+            planner.step(&mut rng);
+        }
+
+        planner.step(&mut rng);
+        assert!(
+            planner.best_path().is_some(),
+            "solved before the fourth batch"
+        );
+        assert!(planner.nodes.iter().any(|node| node.kind == Kind::Pruned));
+        assert!(invalid_edge_count(&planner) > 0);
+        assert_reverse_search_is_exact(&mut planner);
+    }
 }

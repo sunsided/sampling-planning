@@ -356,9 +356,12 @@ cost-to-go incrementally.
   paper; OMPL instead invalidates the reverse branch below it.
 - Pruning uses the geometric `h_hat`, not `h_con`: `h_con` is a cost over the
   current graph and not admissible for denser future batches.
-- A step that ends a batch is cheap, but the step that starts the next one
-  builds the whole graph; when the start is cut off from the goals in the
-  graph, every step is a new batch.
+- A batch ends at the first edge that cannot beat the incumbent. When the
+  batch's graph holds no better path (or none), that is the first edge, so
+  every step starts a batch: up to `batch_size` new states plus one
+  neighbor query per stored state for the graph snapshot (quadratic with
+  `LinearScan`). In free space a run measured 134 batches and 10.5k samples
+  in 500 steps; budget AIT* by batches, not steps, and use `KdTree`.
 
 ### Sparse roadmaps
 
