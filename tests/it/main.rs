@@ -1,5 +1,6 @@
 //! Integration tests for the tree planners on a 2D world with obstacles.
 
+mod roadmaps;
 mod world;
 
 use rand_core::SeedableRng;
@@ -15,7 +16,7 @@ use world::{
 /// The optimal slalom cost, rounded down: the taut string from (1, 1) over the corners (4, 7)
 /// and (5, 7), under (6, 3) and (7, 3), to the goal ball of radius 0.5 around (9, 9), which is
 /// `19.1559 - 0.5`. No solution can be cheaper.
-const SLALOM_OPTIMUM: f64 = 18.655;
+pub const SLALOM_OPTIMUM: f64 = 18.655;
 
 /// An RRT* config whose radius constant is safe for the 10 x 10 world.
 fn star_config() -> RrtStarConfig {

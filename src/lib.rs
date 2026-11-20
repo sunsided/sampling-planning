@@ -83,6 +83,8 @@ extern crate alloc;
 mod goal;
 mod nearest;
 mod problem;
+mod radius;
+pub mod roadmaps;
 mod sampler;
 mod shortcut;
 mod space;

@@ -56,8 +56,3 @@ impl fmt::Display for Error {
 }
 
 impl core::error::Error for Error {}
-
-/// Converts a count to `f64`, saturating at `u32::MAX` (far beyond any tree size).
-fn count_to_f64(count: usize) -> f64 {
-    f64::from(u32::try_from(count).unwrap_or(u32::MAX))
-}

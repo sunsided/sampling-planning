@@ -1,13 +1,13 @@
 //! RRT*: the asymptotically optimal RRT (Karaman and Frazzoli 2011).
 
 use alloc::vec::Vec;
-use core::f64::consts::PI;
 
 use rand_core::Rng;
 
-use super::{Error, count_to_f64, growth::Growth};
+use super::{Error, growth::Growth};
 use crate::{
     LinearScan, NearestNeighbors, Path, Problem, Sampler, StateSpace, Steering, ValidityChecker,
+    radius::{count_to_f64, dimension_f64, unit_ball_volume},
 };
 
 /// Settings for [`RrtStar`].
@@ -68,10 +68,12 @@ impl RrtStarConfig {
     /// sampling box is a safe over-estimate. Pick `gamma` somewhat above this value.
     #[must_use]
     pub fn gamma_lower_bound(dimension: usize, free_volume: f64) -> f64 {
-        let d = count_to_f64(dimension.max(1));
-        let unit_ball = libm::pow(PI, d / 2.0) / libm::tgamma(d / 2.0 + 1.0);
+        let d = dimension_f64(dimension);
 
-        libm::pow(2.0 * (1.0 + 1.0 / d) * free_volume / unit_ball, 1.0 / d)
+        libm::pow(
+            2.0 * (1.0 + 1.0 / d) * free_volume / unit_ball_volume(d),
+            1.0 / d,
+        )
     }
 }
 
