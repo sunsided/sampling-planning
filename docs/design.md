@@ -226,8 +226,11 @@ integration steps and checks each step with `check_motion`. Its cost is the
 total control duration, so solutions are `Trajectory` values (states plus
 controls and durations), not `Path`. SST* shrinks both radii by `xi` after
 epoch `j`, whose length is `(1 + ln j) xi^(-(d + l + 1) j) K_0` (Li et al.
-2016, Algorithm 9). Inactive nodes stay in memory; only the active index
-forgets them.
+2016, Algorithm 9). Inactive leaves are freed at once, and each ancestor that
+becomes an inactive leaf in turn (Algorithm 6). Nodes live in an arena with
+stable ids; freed ids are reused. The start and the current best goal node
+are never freed, so the best trajectory survives even when its goal node goes
+inactive; a replaced best goal node is freed once it is an inactive leaf.
 
 ### Post-processing
 
@@ -341,5 +344,3 @@ Float math (`sqrt`, `ln`, `powf`) is not in `core`. Decision: always use
 - PRM checks roadmap edges in one direction by default. Should directional
   checking be the default instead (correct for reachable sets, twice the
   checks for everyone else)?
-- SST frees nothing; should inactive leaves be dropped (needs node removal
-  from the tree and stable ids)?

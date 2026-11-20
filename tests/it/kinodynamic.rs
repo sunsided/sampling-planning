@@ -96,17 +96,18 @@ fn time_lower_bound() -> f64 {
 }
 
 #[test]
-fn sst_solves_and_stays_sparse() {
+fn sst_solves_and_frees_inactive_leaves() {
     let mut sst = Sst::new(world(), config()).expect("valid");
-    sst.run(20_000, &mut Pcg64Mcg::seed_from_u64(1));
+    let mut rng = Pcg64Mcg::seed_from_u64(1);
+    let added = (0..20_000).filter(|_| sst.step(&mut rng)).count();
 
     let trajectory = sst.best_trajectory().expect("SST solves the pole world");
     assert_solves(&world(), &trajectory);
     assert!(trajectory.cost >= time_lower_bound());
+    assert!(sst.active_count() <= sst.node_count());
     assert!(
-        sst.active_count() * 2 < sst.node_count(),
-        "{} active of {}",
-        sst.active_count(),
+        sst.node_count() * 2 < added,
+        "{} stored of {added} added",
         sst.node_count()
     );
 }

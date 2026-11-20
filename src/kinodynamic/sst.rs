@@ -1,5 +1,7 @@
 //! SST and SST*: stable sparse RRT (Li, Littlefield and Bekris 2016).
 
+mod nodes;
+
 use alloc::vec::Vec;
 
 use rand_core::Rng;
@@ -7,6 +9,7 @@ use rand_core::Rng;
 use super::{Error, KinodynamicProblem, Propagator, Trajectory};
 use crate::radius::count_to_f64;
 use crate::{LinearScan, RemovableNeighbors, Sampler, StateSpace, ValidityChecker, unit_f64};
+use nodes::{Node, Nodes};
 
 /// The SST* schedule: SST runs in epochs, and after each epoch both radii shrink.
 ///
@@ -96,19 +99,6 @@ impl SstConfig {
     }
 }
 
-/// One tree node.
-#[derive(Debug, Clone)]
-struct Node<S, U> {
-    /// The state.
-    state: S,
-    /// The parent node; `None` only for the root.
-    parent: Option<usize>,
-    /// The control and duration from the parent; `None` only for the root.
-    control: Option<(U, f64)>,
-    /// The total control duration from the root.
-    cost: f64,
-}
-
 /// A witness: a point that keeps only the cheapest node within the pruning radius active.
 #[derive(Debug, Clone)]
 struct Witness<S> {
@@ -147,8 +137,11 @@ struct Epoch {
 /// The cost is the total control duration. [`Sst::best_trajectory`] keeps the best solution
 /// found so far, so its cost never increases.
 ///
-/// shortcut: inactive nodes are only removed from the active index, not freed, so memory grows
-/// like RRT's; free inactive leaves if memory matters.
+/// Inactive nodes stay only as long as they are ancestors of other nodes: an inactive leaf is
+/// freed at once, and so is every ancestor that becomes an inactive leaf in turn (Li et al.
+/// 2016, Algorithm 6). Memory therefore tracks the active nodes and their branches, not the
+/// iteration count. Freed node ids are reused. The cheapest goal node is never freed while it is
+/// the best solution, so [`Sst::best_trajectory`] stays available.
 ///
 /// # Examples
 ///
@@ -216,8 +209,9 @@ where
     problem: KinodynamicProblem<Sp, Sa, C, P>,
     /// The settings; the radii shrink here under SST*.
     config: SstConfig,
-    /// All nodes ever added, indexed by node id; node `0` is the start.
-    nodes: Vec<Node<Sp::State, P::Control>>,
+    /// The stored nodes, indexed by node id: active nodes and their ancestors. Node `0` is the
+    /// start, which is never freed.
+    nodes: Nodes<Sp::State, P::Control>,
     /// Index over the active nodes, by node id.
     active: N,
     /// All witnesses, indexed by witness id.
@@ -294,12 +288,14 @@ where
 
         Ok(Self {
             best_goal: problem.goal.contains(&problem.space, &start).then_some(0),
-            nodes: alloc::vec![Node {
+            nodes: Nodes::new(Node {
                 state: start.clone(),
                 parent: None,
                 control: None,
                 cost: 0.0,
-            }],
+                children: 0,
+                active: true,
+            }),
             problem,
             active,
             witnesses: alloc::vec![Witness {
@@ -458,8 +454,8 @@ where
         (cost < self.nodes[*representative].cost).then_some(WitnessSlot::Existing(witness))
     }
 
-    /// Adds the node, makes it the representative of its witness and deactivates the previous
-    /// representative.
+    /// Adds the node, makes it the representative of its witness, deactivates the previous
+    /// representative and frees the inactive leaves this leaves behind.
     fn add(
         &mut self,
         state: Sp::State,
@@ -468,30 +464,9 @@ where
         cost: f64,
         slot: WitnessSlot,
     ) {
-        let id = self.nodes.len();
-
-        match slot {
-            WitnessSlot::Existing(witness) => {
-                let previous = self.witnesses[witness].representative;
-                self.active.remove(previous);
-                self.witnesses[witness].representative = id;
-            }
-            WitnessSlot::New => {
-                self.witness_nn.insert(self.witnesses.len(), state.clone());
-                self.witnesses.push(Witness {
-                    state: state.clone(),
-                    representative: id,
-                });
-            }
-        }
-
-        if self.problem.goal.contains(&self.problem.space, &state)
-            && self
-                .best_goal
-                .is_none_or(|best| cost < self.nodes[best].cost)
-        {
-            self.best_goal = Some(id);
-        }
+        let id = self.nodes.next_id();
+        let previous = self.claim_witness(slot, id, &state);
+        let reaches_goal = self.problem.goal.contains(&self.problem.space, &state);
 
         self.active.insert(id, state.clone());
         self.nodes.push(Node {
@@ -499,7 +474,69 @@ where
             parent: Some(parent),
             control: Some(control),
             cost,
+            children: 0,
+            active: true,
         });
+
+        if let Some(previous) = previous {
+            self.deactivate(previous);
+        }
+
+        if reaches_goal
+            && self
+                .best_goal
+                .is_none_or(|best| cost < self.nodes[best].cost)
+        {
+            if let Some(old) = self.best_goal.replace(id) {
+                self.free_inactive_branch(old);
+            }
+        }
+    }
+
+    /// Makes the future node `id` at `state` the representative of the witness in `slot`, a new
+    /// witness if needed. Returns the previous representative.
+    fn claim_witness(&mut self, slot: WitnessSlot, id: usize, state: &Sp::State) -> Option<usize> {
+        match slot {
+            WitnessSlot::Existing(witness) => Some(core::mem::replace(
+                &mut self.witnesses[witness].representative,
+                id,
+            )),
+            WitnessSlot::New => {
+                self.witness_nn.insert(self.witnesses.len(), state.clone());
+                self.witnesses.push(Witness {
+                    state: state.clone(),
+                    representative: id,
+                });
+
+                None
+            }
+        }
+    }
+
+    /// Removes node `id` from the active index and frees it if that leaves an inactive leaf.
+    fn deactivate(&mut self, id: usize) {
+        self.active.remove(id);
+        self.nodes[id].active = false;
+        self.free_inactive_branch(id);
+    }
+
+    /// Frees node `id` and then its ancestors for as long as each is an inactive leaf.
+    ///
+    /// The start and the current best goal node are never freed.
+    fn free_inactive_branch(&mut self, id: usize) {
+        let mut current = Some(id);
+
+        while let Some(node) = current {
+            let entry = &self.nodes[node];
+            let removable =
+                node != 0 && !entry.active && entry.children == 0 && self.best_goal != Some(node);
+
+            if !removable {
+                return;
+            }
+
+            current = self.nodes.free(node);
+        }
     }
 
     /// The cheapest trajectory into the goal region found so far, or `None` if the goal was not
@@ -528,7 +565,8 @@ where
         })
     }
 
-    /// The number of nodes ever added, including inactive ones and the root.
+    /// The number of stored nodes: active nodes, the inactive ancestors they still need, the
+    /// root and the best goal node. Freed inactive leaves are not counted.
     #[must_use]
     pub fn node_count(&self) -> usize {
         self.nodes.len()
@@ -647,12 +685,38 @@ mod tests {
         assert!(!sst.step(&mut rng));
         assert_eq!((sst.node_count(), sst.active_count()), (3, 3));
         // 0 -> 4.1 (cost 1) is near the witness at 4 and beats its node (cost 2), which goes
-        // inactive.
+        // inactive and, being a leaf, is freed.
         assert!(sst.step(&mut rng));
-        assert_eq!((sst.node_count(), sst.active_count()), (4, 3));
+        assert_eq!((sst.node_count(), sst.active_count()), (3, 3));
+        assert_eq!(sst.nodes.next_id(), 2, "the freed id is reused next");
         assert_eq!(sst.witnesses.len(), 3);
         assert_eq!(sst.witnesses[2].representative, 3);
         assert_eq!(sst.active.nearest(&Euclidean::<1>, &[4.0]), Some(3));
+    }
+
+    #[test]
+    fn the_best_goal_node_survives_deactivation() {
+        let problem = KinodynamicProblem {
+            space: Euclidean::<1>,
+            sampler: Replay(alloc::vec![0.0, 1.0, 0.0], 0),
+            checker: Free,
+            propagator: Replay(alloc::vec![1.0, 1.0, 2.4], 0),
+            start: [0.0],
+            goal: GoalRegion::new([2.0], 0.1),
+        };
+        let mut config = SstConfig::new(0.1, 0.5, 1.0, 1);
+        config.goal_bias = 0.0;
+        let mut sst = Sst::new(problem, config).expect("valid");
+        let mut rng = rand_pcg::Pcg64Mcg::seed_from_u64(1);
+
+        // 0 -> 1 -> 2 reaches the goal at cost 2; then 0 -> 2.4 (cost 1) takes over the witness
+        // at 2 and deactivates the goal node, which must stay stored as the best solution.
+        assert!(sst.step(&mut rng) && sst.step(&mut rng) && sst.step(&mut rng));
+        assert_eq!((sst.node_count(), sst.active_count()), (4, 3));
+
+        let trajectory = sst.best_trajectory().expect("solved");
+        assert_eq!(trajectory.states, [[0.0], [1.0], [2.0]]);
+        assert!((trajectory.cost - 2.0).abs() < 1e-12);
     }
 
     #[test]
