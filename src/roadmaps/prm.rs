@@ -8,7 +8,9 @@ use super::{
     Error,
     graph::{Arc, Route, shortest_path},
 };
-use crate::radius::{dimension_f64, shrinking_radius, unit_ball_volume};
+use crate::radius::{
+    dimension_f64, k_constant_lower_bound, k_nearest_count, shrinking_radius, unit_ball_volume,
+};
 use crate::{GoalRegion, LinearScan, NearestNeighbors, Path, Sampler, StateSpace, ValidityChecker};
 
 /// How a new roadmap node picks the nodes it tries to connect to.
@@ -23,12 +25,33 @@ pub enum Connection {
         /// The radius constant.
         gamma: f64,
     },
+    /// k-nearest PRM: the `k` nearest nodes. At least one.
+    KNearest(usize),
+    /// k-nearest PRM* (Karaman and Frazzoli 2011): the `ceil(k_constant * ln n)` nearest
+    /// nodes, with `n` counting the new node. Asymptotic optimality needs `k_constant` above
+    /// [`PrmConfig::k_constant_lower_bound`]. Positive and finite.
+    StarK {
+        /// The neighbor count constant.
+        k_constant: f64,
+    },
+}
+
+/// Which nodes a state connects to, as resolved for one roadmap size.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Neighborhood {
+    /// Every node within this radius.
+    Radius(f64),
+    /// The `k` nearest nodes.
+    Nearest(usize),
 }
 
 /// Settings for [`Prm`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PrmConfig {
     /// The neighbor rule for new nodes and for query endpoints.
+    ///
+    /// k-nearest rules connect a new node to its `k` nearest older nodes; an older node gains
+    /// edges only when it is among the `k` nearest of a newer one, so degrees differ.
     pub connection: Connection,
     /// Lazy PRM (Bohlin and Kavraki 2000): store edges unchecked and check only the edges of
     /// candidate shortest paths at query time, dropping invalid ones and searching again.
@@ -69,6 +92,23 @@ impl PrmConfig {
     #[must_use]
     pub const fn lazy(self) -> Self {
         Self { lazy: true, ..self }
+    }
+
+    /// k-nearest PRM* with the neighbor count constant `k_constant`, eager checks.
+    #[must_use]
+    pub const fn star_k(k_constant: f64) -> Self {
+        Self {
+            connection: Connection::StarK { k_constant },
+            lazy: false,
+            check_both_directions: false,
+        }
+    }
+
+    /// The smallest k-nearest constant for which k-nearest PRM* is asymptotically optimal
+    /// (Karaman and Frazzoli 2011): `e (1 + 1/d)`.
+    #[must_use]
+    pub fn k_constant_lower_bound(dimension: usize) -> f64 {
+        k_constant_lower_bound(dimension)
     }
 
     /// The smallest `gamma` for which PRM* is asymptotically optimal (Karaman and Frazzoli
@@ -186,7 +226,8 @@ where
     ///
     /// # Errors
     ///
-    /// [`Error::InvalidRadius`] if the radius or `gamma` is not positive and finite.
+    /// [`Error::InvalidRadius`] if the radius, `gamma` or `k_constant` is not positive and finite,
+    /// or `k` is zero.
     pub fn new(space: Sp, sampler: Sa, checker: C, config: PrmConfig) -> Result<Self, Error> {
         Self::with_nearest_neighbors(space, sampler, checker, config, LinearScan::default())
     }
@@ -203,7 +244,8 @@ where
     ///
     /// # Errors
     ///
-    /// [`Error::InvalidRadius`] if the radius or `gamma` is not positive and finite.
+    /// [`Error::InvalidRadius`] if the radius, `gamma` or `k_constant` is not positive and finite,
+    /// or `k` is zero.
     pub fn with_nearest_neighbors(
         space: Sp,
         sampler: Sa,
@@ -211,8 +253,13 @@ where
         config: PrmConfig,
         nn: N,
     ) -> Result<Self, Error> {
-        let (Connection::Radius(value) | Connection::Star { gamma: value }) = config.connection;
-        if !(value.is_finite() && value > 0.0) {
+        let valid = match config.connection {
+            Connection::Radius(value)
+            | Connection::Star { gamma: value }
+            | Connection::StarK { k_constant: value } => value.is_finite() && value > 0.0,
+            Connection::KNearest(k) => k > 0,
+        };
+        if !valid {
             return Err(Error::InvalidRadius);
         }
 
@@ -249,8 +296,7 @@ where
     fn add_node(&mut self, state: Sp::State) {
         let id = self.states.len();
         let mut near = core::mem::take(&mut self.near);
-        self.nn
-            .within_radius(&self.space, &state, self.radius(id + 1), &mut near);
+        self.neighbors(&state, self.neighborhood(id + 1), &mut near);
 
         self.states.push(state.clone());
         self.incident.push(Vec::new());
@@ -295,12 +341,42 @@ where
                 || self.checker.check_motion(&self.space, sb, sa).is_valid())
     }
 
-    /// The connection radius for a roadmap of `n` nodes.
-    fn radius(&self, n: usize) -> f64 {
+    /// The neighbor rule for a roadmap of `n` nodes.
+    fn neighborhood(&self, n: usize) -> Neighborhood {
         match self.config.connection {
-            Connection::Radius(radius) => radius,
-            Connection::Star { gamma } => {
-                shrinking_radius(gamma, n, dimension_f64(self.space.dimension()))
+            Connection::Radius(radius) => Neighborhood::Radius(radius),
+            Connection::Star { gamma } => Neighborhood::Radius(shrinking_radius(
+                gamma,
+                n,
+                dimension_f64(self.space.dimension()),
+            )),
+            Connection::KNearest(k) => Neighborhood::Nearest(k),
+            Connection::StarK { k_constant } => {
+                Neighborhood::Nearest(k_nearest_count(k_constant, n))
+            }
+        }
+    }
+
+    /// Replaces `out` with the roadmap nodes that `state` connects to under `rule`, and returns
+    /// the reach of the rule: the radius, or for k-nearest the distance of the farthest
+    /// neighbor (infinite while fewer than `k` nodes exist).
+    fn neighbors(&self, state: &Sp::State, rule: Neighborhood, out: &mut Vec<usize>) -> f64 {
+        match rule {
+            Neighborhood::Radius(radius) => {
+                self.nn.within_radius(&self.space, state, radius, out);
+
+                radius
+            }
+            Neighborhood::Nearest(k) => {
+                self.nn.k_nearest(&self.space, state, k, out);
+
+                if out.len() < k {
+                    f64::INFINITY
+                } else {
+                    out.last().map_or(f64::INFINITY, |&far| {
+                        self.space.distance(&self.states[far], state)
+                    })
+                }
             }
         }
     }
@@ -342,13 +418,17 @@ where
 
     /// The query-local arcs from the start into the roadmap and from the roadmap to the goal
     /// center, each checked in travel direction.
+    ///
+    /// Both endpoints connect like a new node would. The direct start-to-center motion is
+    /// tried when the center lies within the start's reach: inside the radius, or no farther
+    /// than the start's `k`-th nearest node.
     fn connect_endpoints(&self, start: &Sp::State, goal: &GoalRegion<Sp::State>) -> Endpoints {
-        let radius = self.radius(self.states.len().max(1));
+        let rule = self.neighborhood(self.states.len().max(1));
         let center = goal.center();
         let center_valid = self.checker.check_state(center).is_valid();
         let mut near = Vec::new();
 
-        self.nn.within_radius(&self.space, start, radius, &mut near);
+        let reach = self.neighbors(start, rule, &mut near);
         let from_start = near
             .iter()
             .filter(|&&node| self.is_motion_valid(start, &self.states[node]))
@@ -357,8 +437,7 @@ where
 
         let mut to_center = alloc::vec![f64::INFINITY; self.states.len()];
         if center_valid {
-            self.nn
-                .within_radius(&self.space, center, radius, &mut near);
+            self.neighbors(center, rule, &mut near);
 
             for &node in &near {
                 if self.is_motion_valid(&self.states[node], center) {
@@ -369,7 +448,7 @@ where
 
         let direct = self.space.distance(start, center);
         let start_to_center =
-            (center_valid && direct <= radius && self.is_motion_valid(start, center))
+            (center_valid && direct <= reach && self.is_motion_valid(start, center))
                 .then_some(direct);
 
         Endpoints {

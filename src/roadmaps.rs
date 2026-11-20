@@ -30,7 +30,8 @@ use crate::Validity;
 pub enum Error {
     /// The query start did not check as [`Validity::Valid`]; carries the actual result.
     InvalidStart(Validity),
-    /// A connection radius or radius constant is not positive and finite.
+    /// A connection radius, radius constant or k-nearest constant is not positive and finite,
+    /// or a fixed neighbor count is zero.
     InvalidRadius,
 }
 
@@ -38,7 +39,9 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidStart(validity) => write!(f, "start state is not valid ({validity:?})"),
-            Self::InvalidRadius => f.write_str("connection radius must be positive and finite"),
+            Self::InvalidRadius => f.write_str(
+                "connection radius and constants must be positive and finite, k at least one",
+            ),
         }
     }
 }

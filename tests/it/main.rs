@@ -100,6 +100,40 @@ fn kd_tree_gives_the_same_rrt_star_run_as_linear_scan() {
     assert_eq!(planner.best_path(), rrt_star(slalom(), 5, 1500).best_path());
 }
 
+/// An RRT*-k config with a constant safely above the bound and the steering step as cap.
+fn star_k_config() -> RrtStarConfig {
+    RrtStarConfig::k_nearest(2.0 * RrtStarConfig::k_constant_lower_bound(2), 1.0)
+}
+
+#[test]
+fn rrt_star_k_solves_improves_and_matches_across_indices() {
+    let mut planner = RrtStar::new(slalom(), star_k_config()).expect("valid problem");
+    let mut kd = RrtStar::with_nearest_neighbors(slalom(), star_k_config(), KdTree::default())
+        .expect("valid problem");
+    let (mut rng, mut kd_rng) = (Pcg64Mcg::seed_from_u64(4), Pcg64Mcg::seed_from_u64(4));
+    let mut costs = Vec::new();
+
+    for _ in 0..10 {
+        planner.run(400, &mut rng);
+        kd.run(400, &mut kd_rng);
+        assert_eq!(planner.best_path(), kd.best_path());
+        costs.extend(planner.best_path().map(|path| path.cost));
+    }
+
+    let path = planner.best_path().expect("RRT*-k solves the slalom");
+    assert_solves(&slalom(), &path);
+    assert!(costs.windows(2).all(|pair| pair[1] <= pair[0]), "{costs:?}");
+    assert!(costs.last() < costs.first(), "{costs:?}");
+    assert!(
+        costs.iter().all(|&cost| cost >= SLALOM_OPTIMUM),
+        "{costs:?}"
+    );
+    assert_eq!(
+        RrtStar::new(slalom(), RrtStarConfig::k_nearest(f64::NAN, 1.0)).err(),
+        Some(Error::InvalidGamma)
+    );
+}
+
 #[test]
 fn unknown_regions_are_treated_as_invalid() {
     let fogged = || {

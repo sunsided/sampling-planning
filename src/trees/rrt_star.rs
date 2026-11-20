@@ -7,7 +7,9 @@ use rand_core::Rng;
 use super::{Error, growth::Growth};
 use crate::{
     LinearScan, NearestNeighbors, Path, Problem, Sampler, StateSpace, Steering, ValidityChecker,
-    radius::{count_to_f64, dimension_f64, unit_ball_volume},
+    radius::{
+        count_to_f64, dimension_f64, k_constant_lower_bound, k_nearest_count, unit_ball_volume,
+    },
 };
 
 /// Settings for [`RrtStar`].
@@ -19,8 +21,15 @@ pub struct RrtStarConfig {
     /// `gamma * (ln n / n)^(1/d)` of a new node are candidate parents and rewiring targets.
     ///
     /// Asymptotic optimality needs `gamma` above [`RrtStarConfig::gamma_lower_bound`].
-    /// Positive and finite.
+    /// Positive and finite. Unused when [`RrtStarConfig::k_nearest`] is set.
     pub gamma: f64,
+    /// RRT*-k: when `Some(k_constant)`, the candidate parents and rewiring targets of a new node
+    /// are its `ceil(k_constant * ln n)` nearest nodes (`n` counting the new node) instead of
+    /// the nodes within the `gamma` radius. Neighbors beyond `max_radius` are still dropped.
+    ///
+    /// Asymptotic optimality needs `k_constant` above
+    /// [`RrtStarConfig::k_constant_lower_bound`]. Positive and finite. `None` by default.
+    pub k_nearest: Option<f64>,
     /// Upper bound on the connection radius, `eta` in Karaman and Frazzoli. Usually the
     /// steering step, so that no edge is longer than one steering step. Positive; may be
     /// infinite.
@@ -50,9 +59,28 @@ impl RrtStarConfig {
         Self {
             goal_bias: 0.05,
             gamma,
+            k_nearest: None,
             max_radius,
             informed: false,
         }
+    }
+
+    /// An RRT*-k config: `ceil(k_constant * ln n)` nearest neighbors, capped at `max_radius`,
+    /// and a goal bias of 5 %.
+    #[must_use]
+    pub const fn k_nearest(k_constant: f64, max_radius: f64) -> Self {
+        Self {
+            k_nearest: Some(k_constant),
+            ..Self::new(1.0, max_radius)
+        }
+    }
+
+    /// The smallest k-nearest constant for which RRT*-k is asymptotically optimal (Karaman and
+    /// Frazzoli 2011): `e (1 + 1/d)`. Unlike the radius bound it does not depend on the free
+    /// volume.
+    #[must_use]
+    pub fn k_constant_lower_bound(dimension: usize) -> f64 {
+        k_constant_lower_bound(dimension)
     }
 
     /// This config with [`RrtStarConfig::informed`] switched on.
@@ -92,6 +120,8 @@ pub struct RrtStar<Sp: StateSpace, Sa, C, St, N = LinearScan<<Sp as StateSpace>:
     growth: Growth<Sp, Sa, C, St, N>,
     /// The connection radius constant; positive and finite.
     gamma: f64,
+    /// The RRT*-k constant, if the neighborhood is k-nearest; positive and finite.
+    k_nearest: Option<f64>,
     /// Upper bound on the connection radius; positive, may be infinite.
     max_radius: f64,
     /// Whether to reject samples that cannot improve the current solution.
@@ -113,7 +143,8 @@ where
     ///
     /// - [`Error::InvalidStart`] if the start state is not valid.
     /// - [`Error::GoalBiasOutOfRange`] if the goal bias is not in `[0, 1]`.
-    /// - [`Error::InvalidGamma`] if `gamma` is not positive and finite.
+    /// - [`Error::InvalidGamma`] if `gamma` is not positive and finite while no k-nearest
+    ///   constant is set, or the k-nearest constant is not positive and finite.
     /// - [`Error::InvalidMaxRadius`] if `max_radius` is not positive.
     pub fn new(problem: Problem<Sp, Sa, C, St>, config: RrtStarConfig) -> Result<Self, Error> {
         Self::with_nearest_neighbors(problem, config, LinearScan::default())
@@ -134,14 +165,16 @@ where
     ///
     /// - [`Error::InvalidStart`] if the start state is not valid.
     /// - [`Error::GoalBiasOutOfRange`] if the goal bias is not in `[0, 1]`.
-    /// - [`Error::InvalidGamma`] if `gamma` is not positive and finite.
+    /// - [`Error::InvalidGamma`] if `gamma` is not positive and finite while no k-nearest
+    ///   constant is set, or the k-nearest constant is not positive and finite.
     /// - [`Error::InvalidMaxRadius`] if `max_radius` is not positive.
     pub fn with_nearest_neighbors(
         problem: Problem<Sp, Sa, C, St>,
         config: RrtStarConfig,
         nn: N,
     ) -> Result<Self, Error> {
-        if !(config.gamma.is_finite() && config.gamma > 0.0) {
+        let constant = config.k_nearest.unwrap_or(config.gamma);
+        if !(constant.is_finite() && constant > 0.0) {
             return Err(Error::InvalidGamma);
         }
 
@@ -152,6 +185,7 @@ where
         Ok(Self {
             growth: Growth::new(problem, config.goal_bias, nn)?,
             gamma: config.gamma,
+            k_nearest: config.k_nearest,
             max_radius: config.max_radius,
             informed: config.informed,
             near: Vec::new(),
@@ -167,10 +201,7 @@ where
         }
 
         let mut near = core::mem::take(&mut self.near);
-        let space = &self.growth.problem.space;
-        self.growth
-            .nn
-            .within_radius(space, &new, self.radius(), &mut near);
+        self.neighbors(&new, &mut near);
 
         let (parent, cost) = self.choose_parent(nearest, &new, &near);
         let id = self.growth.add(new, parent, cost);
@@ -250,6 +281,26 @@ where
 
         problem.space.distance(&problem.start, state)
             + problem.space.distance(state, problem.goal.center())
+    }
+
+    /// Replaces `near` with the candidate parents and rewiring targets of the new node at
+    /// `state`: the radius ball, or the k nearest nodes within `max_radius`.
+    fn neighbors(&self, state: &Sp::State, near: &mut Vec<usize>) {
+        let space = &self.growth.problem.space;
+        let nn = &self.growth.nn;
+
+        let Some(k_constant) = self.k_nearest else {
+            nn.within_radius(space, state, self.radius(), near);
+            return;
+        };
+
+        let k = k_nearest_count(k_constant, self.growth.tree.len() + 1);
+        nn.k_nearest(space, state, k, near);
+
+        if self.max_radius.is_finite() {
+            let tree = &self.growth.tree;
+            near.retain(|&id| space.distance(tree.state(id), state) <= self.max_radius);
+        }
     }
 
     /// The connection radius for the next node: `min(gamma * (ln n / n)^(1/d), max_radius)`,

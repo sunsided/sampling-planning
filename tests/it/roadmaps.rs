@@ -4,7 +4,7 @@ use rand_core::SeedableRng;
 use rand_pcg::Pcg64Mcg;
 use sampling_planning::{
     Euclidean, GoalRegion, KdTree, Path, UniformBox, Validity, ValidityChecker,
-    roadmaps::{FmtStar, FmtStarConfig, Prm, PrmConfig},
+    roadmaps::{Connection, FmtStar, FmtStarConfig, Prm, PrmConfig},
 };
 
 use crate::SLALOM_OPTIMUM;
@@ -167,4 +167,63 @@ fn fmt_star_reports_disconnected_batches() {
         &mut Pcg64Mcg::seed_from_u64(1),
     );
     assert_eq!(path, Ok(None));
+}
+
+/// A k-nearest PRM* config with a constant safely above the bound.
+fn star_k() -> PrmConfig {
+    PrmConfig::star_k(2.0 * PrmConfig::k_constant_lower_bound(2))
+}
+
+#[test]
+fn k_nearest_prm_star_solves_and_improves() {
+    let small = slalom_query(&mut slalom_roadmap(star_k(), 300)).expect("connected");
+    let large = slalom_query(&mut slalom_roadmap(star_k(), 4000)).expect("connected");
+
+    assert_solves_with(&slalom(), &small, f64::INFINITY);
+    assert_solves_with(&slalom(), &large, f64::INFINITY);
+    assert!(large.cost < small.cost, "{} vs {}", large.cost, small.cost);
+    assert!(large.cost >= SLALOM_OPTIMUM && large.cost < SLALOM_OPTIMUM * 1.05);
+}
+
+#[test]
+fn k_nearest_prm_with_kd_tree_matches_linear_scan() {
+    for config in [
+        star_k(),
+        PrmConfig {
+            connection: Connection::KNearest(8),
+            ..star()
+        },
+    ] {
+        let world = slalom();
+        let mut kd = Prm::with_nearest_neighbors(
+            world.space,
+            world.sampler,
+            world.checker,
+            config,
+            KdTree::default(),
+        )
+        .expect("valid");
+        kd.grow(1000, &mut Pcg64Mcg::seed_from_u64(8));
+
+        let path = kd.query(&world.start, &world.goal).expect("valid start");
+        let mut reference = slalom_roadmap(config, 1000);
+
+        assert_eq!(kd.edge_count(), reference.edge_count());
+        assert_eq!(path, slalom_query(&mut reference));
+        assert_solves_with(&slalom(), &path.expect("connected"), f64::INFINITY);
+    }
+}
+
+#[test]
+fn zero_neighbors_are_rejected() {
+    let world = slalom();
+    let config = PrmConfig {
+        connection: Connection::KNearest(0),
+        ..star()
+    };
+
+    assert_eq!(
+        Prm::new(world.space, world.sampler, world.checker, config).err(),
+        Some(sampling_planning::roadmaps::Error::InvalidRadius)
+    );
 }

@@ -11,7 +11,7 @@ Not implemented yet:
 
 - Tree expansion: RRT#
 - Batch-informed: BIT*, AIT*, ABIT*, EIT*
-- Roadmaps: SPARS, SPARS2, k-nearest PRM*
+- Roadmaps: SPARS, SPARS2
 - Fast marching: BFMT*
 - Kinodynamic: KPIECE
 - State spaces: SO(2), SE(2), SE(3), compound spaces
@@ -20,10 +20,10 @@ Not implemented yet:
 
 Pre-release; the API will change. Implemented:
 
-- Tree planners: RRT, RRT* with optional informed sampling (Informed RRT*, with direct
+- Tree planners: RRT, RRT* (radius or k-nearest) with optional informed sampling (Informed RRT*, with direct
   prolate-hyperspheroid sampling in Euclidean spaces), RRT-Connect (bidirectional).
-- Roadmaps: PRM (fixed radius), PRM* (shrinking radius), lazy PRM; multi-query, with
-  Dijkstra queries on a reusable roadmap.
+- Roadmaps: PRM (fixed radius or fixed k), PRM* (shrinking radius or `k ln n` nearest), lazy
+  PRM; multi-query, with Dijkstra queries on a reusable roadmap.
 - Batch planners: FMT* (fast marching tree).
 - Kinodynamic planners: SST and SST* over a `Propagator` (forward simulation) trait; inactive
   leaves are freed.
