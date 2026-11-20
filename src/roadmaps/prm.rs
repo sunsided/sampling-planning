@@ -594,6 +594,52 @@ mod tests {
         }
     }
 
+    /// A one-way gate at `x = 5`: motions may cross it only while `x` increases.
+    struct OneWay;
+
+    impl ValidityChecker<Euclidean<1>> for OneWay {
+        fn check_state(&self, _: &[f64; 1]) -> Validity {
+            Validity::Valid
+        }
+
+        fn check_motion(&self, _: &Euclidean<1>, from: &[f64; 1], to: &[f64; 1]) -> Validity {
+            if (from[0] < 5.0) != (to[0] < 5.0) && to[0] < from[0] {
+                Validity::Invalid
+            } else {
+                Validity::Valid
+            }
+        }
+    }
+
+    /// The first result of querying from 9 to 1 across the gate on a 1D roadmap.
+    fn leftward(config: PrmConfig) -> Option<Path<[f64; 1]>> {
+        let sampler = UniformBox::new([0.0], [10.0]);
+        let mut prm = Prm::new(Euclidean::<1>, sampler, OneWay, config).expect("valid");
+        prm.grow(1000, &mut rand_pcg::Pcg64Mcg::seed_from_u64(5));
+
+        prm.query(&[9.0], &GoalRegion::new([1.0], 0.1))
+            .expect("valid start")
+    }
+
+    #[test]
+    fn two_way_checks_keep_directional_checkers_sound() {
+        let both = |config: PrmConfig| PrmConfig {
+            check_both_directions: true,
+            ..config
+        };
+
+        assert_eq!(leftward(both(PrmConfig::fixed(0.5))), None);
+        assert_eq!(leftward(both(PrmConfig::fixed(0.5).lazy())), None);
+
+        // One-way checks only suit symmetric checkers: here they accept an edge that is
+        // invalid in the direction it is traveled.
+        let unsound = leftward(PrmConfig::fixed(0.5)).expect("one-way checks find a path");
+        let crossing = unsound.states.windows(2).any(|pair| {
+            OneWay.check_motion(&Euclidean::<1>, &pair[0], &pair[1]) == Validity::Invalid
+        });
+        assert!(crossing);
+    }
+
     #[test]
     fn rejects_bad_radius_and_invalid_start() {
         let make = |config| {

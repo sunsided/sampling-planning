@@ -13,7 +13,7 @@ use crate::{LinearScan, RemovableNeighbors, Sampler, StateSpace, ValidityChecker
 /// Epoch `0` lasts `first_epoch` iterations, epoch `j >= 1` lasts
 /// `(1 + ln j) * shrink^(-(d + l + 1) j) * first_epoch` iterations, where `d` is the state and
 /// `l` the control dimension. After epoch `j` both radii are multiplied by `shrink` (Li et al.
-/// 2016, Algorithm 7). With the radii shrinking toward zero, SST* is asymptotically optimal.
+/// 2016, Algorithm 9). With the radii shrinking toward zero, SST* is asymptotically optimal.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SstStarSchedule {
     /// The radius factor per epoch, `xi` in the paper. In `(0, 1)`.
@@ -576,7 +576,84 @@ fn saturating_count(value: f64) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Euclidean, GoalRegion, NearestNeighbors, Validity};
     use rand_core::SeedableRng;
+
+    /// Replays a fixed list of values, cycling; used for both samples and controls.
+    struct Replay(Vec<f64>, usize);
+
+    impl Replay {
+        /// The next value.
+        fn next(&mut self) -> f64 {
+            self.1 += 1;
+            self.0[(self.1 - 1) % self.0.len()]
+        }
+    }
+
+    impl Sampler<[f64; 1]> for Replay {
+        fn sample<R: Rng + ?Sized>(&mut self, _: &mut R) -> [f64; 1] {
+            [self.next()]
+        }
+    }
+
+    impl Propagator<Euclidean<1>> for Replay {
+        type Control = f64;
+
+        fn control_dimension(&self) -> usize {
+            1
+        }
+
+        fn sample_control<R: Rng + ?Sized>(&mut self, _: &mut R) -> f64 {
+            self.next()
+        }
+
+        fn propagate(&self, _: &Euclidean<1>, from: &[f64; 1], u: &f64, dt: f64) -> [f64; 1] {
+            [from[0] + u * dt]
+        }
+    }
+
+    /// Free space everywhere.
+    struct Free;
+
+    impl ValidityChecker<Euclidean<1>> for Free {
+        fn check_state(&self, _: &[f64; 1]) -> Validity {
+            Validity::Valid
+        }
+
+        fn check_motion(&self, _: &Euclidean<1>, _: &[f64; 1], _: &[f64; 1]) -> Validity {
+            Validity::Valid
+        }
+    }
+
+    #[test]
+    fn hand_checked_witness_rules() {
+        let problem = KinodynamicProblem {
+            space: Euclidean::<1>,
+            sampler: Replay(alloc::vec![0.0, 2.0, 2.0, 0.0], 0),
+            checker: Free,
+            propagator: Replay(alloc::vec![2.0, 2.0, 0.2, 4.1], 0),
+            start: [0.0],
+            goal: GoalRegion::new([100.0], 0.1),
+        };
+        let mut config = SstConfig::new(0.1, 0.5, 1.0, 1);
+        config.goal_bias = 0.0;
+        let mut sst = Sst::new(problem, config).expect("valid");
+        let mut rng = rand_pcg::Pcg64Mcg::seed_from_u64(1);
+
+        // 0 -> 2 (cost 1) and 2 -> 4 (cost 2) are far from every witness: new witnesses.
+        assert!(sst.step(&mut rng));
+        assert!(sst.step(&mut rng));
+        // 2 -> 2.2 (cost 2) is near the witness at 2, whose node costs 1: rejected.
+        assert!(!sst.step(&mut rng));
+        assert_eq!((sst.node_count(), sst.active_count()), (3, 3));
+        // 0 -> 4.1 (cost 1) is near the witness at 4 and beats its node (cost 2), which goes
+        // inactive.
+        assert!(sst.step(&mut rng));
+        assert_eq!((sst.node_count(), sst.active_count()), (4, 3));
+        assert_eq!(sst.witnesses.len(), 3);
+        assert_eq!(sst.witnesses[2].representative, 3);
+        assert_eq!(sst.active.nearest(&Euclidean::<1>, &[4.0]), Some(3));
+    }
 
     #[test]
     fn step_counts_cover_the_whole_range() {

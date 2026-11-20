@@ -151,6 +151,17 @@ fn sst_star_shrinks_its_radii_and_gets_close_to_optimal() {
 }
 
 #[test]
+fn sst_with_kd_tree_matches_linear_scan() {
+    let mut kd = Sst::with_nearest_neighbors(world(), config(), KdTree::default()).expect("valid");
+    let mut linear = Sst::new(world(), config()).expect("valid");
+    kd.run(5000, &mut Pcg64Mcg::seed_from_u64(6));
+    linear.run(5000, &mut Pcg64Mcg::seed_from_u64(6));
+
+    assert_eq!(kd.active_count(), linear.active_count());
+    assert_eq!(kd.best_trajectory(), linear.best_trajectory());
+}
+
+#[test]
 fn sst_is_reproducible_and_validates_its_inputs() {
     let run = || {
         let mut sst = Sst::new(world(), config()).expect("valid");

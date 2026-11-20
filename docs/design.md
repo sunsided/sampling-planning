@@ -216,7 +216,7 @@ integration steps and checks each step with `check_motion`. Its cost is the
 total control duration, so solutions are `Trajectory` values (states plus
 controls and durations), not `Path`. SST* shrinks both radii by `xi` after
 epoch `j`, whose length is `(1 + ln j) xi^(-(d + l + 1) j) K_0` (Li et al.
-2016, Algorithm 7). Inactive nodes stay in memory; only the active index
+2016, Algorithm 9). Inactive nodes stay in memory; only the active index
 forgets them.
 
 ### Post-processing
