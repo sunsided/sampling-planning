@@ -130,8 +130,21 @@ where
         !self.goal_nodes.is_empty()
     }
 
+    /// The cost of the cheapest path to a goal node, or `None` if no node reached the goal yet.
+    pub(super) fn best_cost(&self) -> Option<f64> {
+        self.best_goal_node().map(|id| self.tree.cost(id))
+    }
+
     /// The cheapest path to a goal node, or `None` if no node reached the goal yet.
     pub(super) fn best_path(&self) -> Option<Path<Sp::State>> {
+        self.best_goal_node().map(|id| Path {
+            states: self.tree.path_to(id),
+            cost: self.tree.cost(id),
+        })
+    }
+
+    /// The goal node with the lowest cost; the earliest one on ties.
+    fn best_goal_node(&self) -> Option<usize> {
         let mut best: Option<usize> = None;
 
         for &id in &self.goal_nodes {
@@ -140,9 +153,6 @@ where
             }
         }
 
-        best.map(|id| Path {
-            states: self.tree.path_to(id),
-            cost: self.tree.cost(id),
-        })
+        best
     }
 }

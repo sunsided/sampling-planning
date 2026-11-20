@@ -8,7 +8,9 @@ use sampling_planning::{
     Euclidean, KdTree, StraightLine, UniformBox, Validity, shortcut, shortcut_random,
     trees::{Error, Rrt, RrtConfig, RrtConnect, RrtStar, RrtStarConfig},
 };
-use world::{Boxes, World2d, assert_solves, assert_solves_with, problem, slalom};
+use world::{
+    Boxes, POLE_OPTIMUM, World2d, assert_solves, assert_solves_with, pole, problem, slalom,
+};
 
 /// The optimal slalom cost, rounded down: the taut string from (1, 1) over the corners (4, 7)
 /// and (5, 7), under (6, 3) and (7, 3), to the goal ball of radius 0.5 around (9, 9), which is
@@ -207,5 +209,37 @@ fn rrt_connect_avoids_fog_and_rejects_bad_goals() {
     assert_eq!(
         RrtConnect::new(blocked).err(),
         Some(Error::InvalidGoal(Validity::Invalid))
+    );
+}
+
+#[test]
+fn informed_rrt_star_converges_faster_on_an_open_world() {
+    for seed in 0..4 {
+        let plain = rrt_star(pole(), seed, 3000).best_path().expect("solved");
+        let mut informed = RrtStar::new(pole(), star_config().informed()).expect("valid problem");
+        informed.run(3000, &mut Pcg64Mcg::seed_from_u64(seed));
+        let informed = informed.best_path().expect("solved");
+
+        assert_solves(&pole(), &informed);
+        assert!(informed.cost >= POLE_OPTIMUM);
+        assert!(
+            informed.cost < plain.cost,
+            "seed {seed}: informed {} vs plain {}",
+            informed.cost,
+            plain.cost
+        );
+    }
+}
+
+#[test]
+fn informed_sampling_changes_nothing_when_the_informed_set_covers_the_box() {
+    // Every slalom solution costs more than the largest start-to-goal detour inside the box,
+    // so every sample is accepted at the first attempt and the RNG stream is unchanged.
+    let mut informed = RrtStar::new(slalom(), star_config().informed()).expect("valid problem");
+    informed.run(2000, &mut Pcg64Mcg::seed_from_u64(6));
+
+    assert_eq!(
+        informed.best_path(),
+        rrt_star(slalom(), 6, 2000).best_path()
     );
 }

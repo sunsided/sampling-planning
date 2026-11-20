@@ -23,7 +23,7 @@ use core::fmt;
 
 pub use rrt::{Rrt, RrtConfig};
 pub use rrt_connect::RrtConnect;
-pub use rrt_star::{RrtStar, RrtStarConfig};
+pub use rrt_star::{INFORMED_ATTEMPTS, RrtStar, RrtStarConfig};
 
 use crate::Validity;
 

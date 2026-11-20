@@ -25,7 +25,19 @@ pub struct RrtStarConfig {
     /// steering step, so that no edge is longer than one steering step. Positive; may be
     /// infinite.
     pub max_radius: f64,
+    /// Informed sampling (Gammell et al. 2014): once a solution of cost `c` exists, only keep
+    /// samples `x` with `d(start, x) + d(x, goal center) < c + goal tolerance`, the states that
+    /// can still lie on a cheaper path.
+    ///
+    /// Samples are drawn from the sampler and rejected, so this works for every
+    /// [`Sampler`] and [`StateSpace`], but costs up to [`INFORMED_ATTEMPTS`] sampler calls per
+    /// iteration when the informed set is small. Until the first solution the planner behaves
+    /// exactly as without it. Off by default.
+    pub informed: bool,
 }
+
+/// The most samples an informed iteration draws before it settles for an uninformed one.
+pub const INFORMED_ATTEMPTS: usize = 64;
 
 impl RrtStarConfig {
     /// Creates a config with the given radius constant and radius cap, and a goal bias of 5 %.
@@ -35,6 +47,16 @@ impl RrtStarConfig {
             goal_bias: 0.05,
             gamma,
             max_radius,
+            informed: false,
+        }
+    }
+
+    /// This config with [`RrtStarConfig::informed`] switched on.
+    #[must_use]
+    pub const fn informed(self) -> Self {
+        Self {
+            informed: true,
+            ..self
         }
     }
 
@@ -66,6 +88,8 @@ pub struct RrtStar<Sp: StateSpace, Sa, C, St, N = LinearScan<<Sp as StateSpace>:
     gamma: f64,
     /// Upper bound on the connection radius; positive, may be infinite.
     max_radius: f64,
+    /// Whether to reject samples that cannot improve the current solution.
+    informed: bool,
     /// Reused buffer for neighbor queries, to avoid an allocation per iteration.
     near: Vec<usize>,
 }
@@ -123,13 +147,15 @@ where
             growth: Growth::new(problem, config.goal_bias, nn)?,
             gamma: config.gamma,
             max_radius: config.max_radius,
+            informed: config.informed,
             near: Vec::new(),
         })
     }
 
     /// Runs one iteration. Returns whether a node was added.
     pub fn step<R: Rng + ?Sized>(&mut self, rng: &mut R) -> bool {
-        let (nearest, new) = self.growth.propose(rng);
+        let target = self.draw_target(rng);
+        let (nearest, new) = self.growth.propose_toward(&target);
         if !self.growth.is_motion_valid(nearest, &new) {
             return false;
         }
@@ -146,6 +172,46 @@ where
 
         self.near = near;
         true
+    }
+
+    /// Draws the next growth target: a goal-biased sample, restricted to the informed set when
+    /// informed sampling is on and a solution exists.
+    fn draw_target<R: Rng + ?Sized>(&mut self, rng: &mut R) -> Sp::State {
+        let Some(bound) = self.informed_bound() else {
+            return self.growth.draw(rng);
+        };
+
+        let mut sample = self.growth.draw(rng);
+        for _ in 1..INFORMED_ATTEMPTS {
+            if self.informed_cost(&sample) < bound {
+                break;
+            }
+
+            sample = self.growth.draw(rng);
+        }
+
+        sample
+    }
+
+    /// The informed-set bound `c_best + tolerance`, or `None` when informed sampling is off or
+    /// no solution exists yet.
+    fn informed_bound(&self) -> Option<f64> {
+        if !self.informed {
+            return None;
+        }
+
+        let best = self.growth.best_cost()?;
+
+        Some(best + self.growth.problem.goal.tolerance())
+    }
+
+    /// The informed heuristic `d(start, x) + d(x, goal center)`, a lower bound on the cost of a
+    /// solution through `x` plus the goal tolerance.
+    fn informed_cost(&self, state: &Sp::State) -> f64 {
+        let problem = &self.growth.problem;
+
+        problem.space.distance(&problem.start, state)
+            + problem.space.distance(state, problem.goal.center())
     }
 
     /// The connection radius for the next node: `min(gamma * (ln n / n)^(1/d), max_radius)`,

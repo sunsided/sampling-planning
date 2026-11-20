@@ -49,6 +49,25 @@ pub fn slalom() -> World2d {
     })
 }
 
+/// A 10 x 10 world with one block in the middle, from (1, 5) to within 0.5 of (9, 5).
+///
+/// The straight line is blocked, but the informed set of any near-optimal path is a thin
+/// ellipse, so informed sampling pays off here.
+pub fn pole() -> World2d {
+    let mut world = problem(Boxes {
+        obstacles: vec![([4.5, 3.0], [5.5, 7.0])],
+        fog: Vec::new(),
+    });
+    world.start = [1.0, 5.0];
+    world.goal = GoalRegion::new([9.0, 5.0], 0.5);
+
+    world
+}
+
+/// The optimal [`pole`] cost, rounded down: (1, 5) over the corners (4.5, 7) and (5.5, 7) to
+/// the goal ball around (9, 5), `9.0623 - 0.5`.
+pub const POLE_OPTIMUM: f64 = 8.562;
+
 /// A 10 x 10 world around `checker`, from (1, 1) to within 0.5 of (9, 9).
 pub fn problem(checker: Boxes) -> World2d {
     Problem {
