@@ -214,8 +214,8 @@ which matters for reachable-set edge checks. Asymptotic optimality needs
 `gamma > (2 (1 + 1/d))^(1/d) (mu(X_free) / zeta_d)^(1/d)`, where `zeta_d` is
 the volume of the unit `d`-ball; the docs on `RrtStarConfig` spell this out.
 RRT*-k (`RrtStarConfig::k_nearest`) uses the `ceil(k ln n)` nearest nodes
-instead, with `k > 2^(d+1) e (1 + 1/d)` (Theorem 39; OMPL uses the RRG bound
-`e (1 + 1/d)`), and still drops neighbors beyond `eta`.
+instead, with `k > 2^(d+1) e (1 + 1/d)` (Theorem 39; OMPL uses 1.1 times
+this), and still drops neighbors beyond `eta`.
 When a node is rewired, the costs of all its descendants are recomputed, so
 the cost of every node, and the best solution cost, never increases.
 

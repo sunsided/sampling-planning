@@ -93,13 +93,14 @@ impl fmt::Display for Error {
         match self {
             Self::InvalidStart(validity) => write!(f, "start state is not valid ({validity:?})"),
             Self::GoalBiasOutOfRange => f.write_str("goal bias must be in [0, 1]"),
-            Self::InvalidRadius => f.write_str("radii must be positive and finite"),
+            Self::InvalidRadius => f.write_str("radii and cell sizes must be positive and finite"),
             Self::InvalidPropagation => {
                 f.write_str("step size must be positive and finite, step count at least one")
             }
-            Self::InvalidSchedule => {
-                f.write_str("shrink factor must be in (0, 1), first epoch at least one iteration")
-            }
+            Self::InvalidSchedule => f.write_str(
+                "shrink factor must be in (0, 1) and first epoch at least one iteration, \
+                     or score factors in (0, 1] and exterior bias in [0, 1]",
+            ),
         }
     }
 }

@@ -397,9 +397,18 @@ fn bfmt_star_rejects_an_invalid_goal_center() {
 
 /// A SPARS2 roadmap over the slalom, constructed to completion with a fixed seed.
 fn spars2_slalom(seed: u64) -> Spars2<Euclidean<2>, UniformBox<2>, Boxes, KdTree<2>> {
+    spars2_slalom_with(seed, 3.0)
+}
+
+/// A SPARS2 roadmap over the slalom with the given stretch factor.
+fn spars2_slalom_with(
+    seed: u64,
+    stretch: f64,
+) -> Spars2<Euclidean<2>, UniformBox<2>, Boxes, KdTree<2>> {
     let world = slalom();
     let mut config = Spars2Config::new(2.0, 0.05);
     config.max_failures = 1000;
+    config.stretch = stretch;
     let mut spars = Spars2::with_nearest_neighbors(
         world.space,
         world.sampler,
@@ -443,27 +452,70 @@ fn spars2_is_sparse_covering_and_within_its_stretch() {
     }
 }
 
-/// Asserts that almost every valid state sees a guard: the coverage property.
+/// Asserts that almost every valid state connects to the slalom goal through the roadmap: the
+/// coverage and connectivity properties together.
 fn assert_covers(spars: &Spars2<Euclidean<2>, UniformBox<2>, Boxes, KdTree<2>>, seed: u64) {
     let world = slalom();
     let mut sampler = world.sampler;
     let mut rng = Pcg64Mcg::seed_from_u64(100 + seed);
-    let (mut valid, mut covered) = (0, 0);
+    let (mut tried, mut connected) = (0, 0);
 
     for _ in 0..1000 {
         let state = sampler.sample(&mut rng);
-        if !world.checker.check_state(&state).is_valid() {
+        if !world.checker.check_state(&state).is_valid()
+            || world.goal.contains(&world.space, &state)
+        {
             continue;
         }
 
-        valid += 1;
-        let goal = GoalRegion::new(state, 0.0);
-        covered += usize::from(spars.query(&state, &goal).expect("valid").is_some());
+        tried += 1;
+        let path = spars.query(&state, &world.goal).expect("valid");
+        connected += usize::from(path.is_some_and(|path| path.states.len() > 1));
     }
 
     assert!(
-        covered * 100 >= valid * 98,
-        "seed {seed}: {covered} of {valid}"
+        connected * 100 >= tried * 98,
+        "seed {seed}: {connected} of {tried}"
+    );
+}
+
+#[test]
+fn spars2_with_a_tighter_stretch_adds_shortcuts_and_shortens_paths() {
+    let (tight, loose) = (spars2_slalom_with(5, 1.2), spars2_slalom_with(5, 100.0));
+    let world = slalom();
+    let mut sampler = world.sampler;
+    let mut rng = Pcg64Mcg::seed_from_u64(77);
+    let (mut tight_total, mut loose_total, mut pairs) = (0.0, 0.0, 0);
+
+    while pairs < 50 {
+        let (a, b) = (sampler.sample(&mut rng), sampler.sample(&mut rng));
+        if !(world.checker.check_state(&a).is_valid() && world.checker.check_state(&b).is_valid()) {
+            continue;
+        }
+
+        let goal = GoalRegion::new(b, 0.0);
+        let (Some(t), Some(l)) = (
+            tight.query(&a, &goal).expect("valid"),
+            loose.query(&a, &goal).expect("valid"),
+        ) else {
+            continue;
+        };
+
+        tight_total += t.cost;
+        loose_total += l.cost;
+        pairs += 1;
+    }
+
+    assert!(
+        tight.guard_counts()[3] > loose.guard_counts()[3],
+        "{:?} vs {:?}",
+        tight.guard_counts(),
+        loose.guard_counts()
+    );
+    assert!(tight.edge_count() > loose.edge_count());
+    assert!(
+        tight_total < loose_total,
+        "tight {tight_total} vs loose {loose_total}"
     );
 }
 

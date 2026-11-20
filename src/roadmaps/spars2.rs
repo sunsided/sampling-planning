@@ -114,7 +114,9 @@ type Interfaces<S> = BTreeMap<(usize, usize), InterfaceData<S>>;
 /// Differences to OMPL's `SPARStwo`, documented here so that results can be compared: the
 /// quality criterion uses OMPL's midpoint estimate `(d(r, v) + d(v, r'')) / 2` for the path
 /// through `v`, as OMPL does (the paper takes a graph shortest path), but adds the path of
-/// interface points without OMPL's smoothing step; any change to the graph resets the failure
+/// interface points without OMPL's smoothing step; the stretch test around a guard stops at the
+/// first violation, even when no shortcut could be added (OMPL finishes the neighbor's inner
+/// loop); any change to the graph resets the failure
 /// counter (OMPL resets it only for new guards and direct interface edges); and sampling near
 /// a state follows the geodesic toward a uniform sample, [`NEAR_ATTEMPTS`] tries at most, instead
 /// of OMPL's unbounded retry.

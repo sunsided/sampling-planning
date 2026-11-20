@@ -80,8 +80,7 @@ impl RrtStarConfig {
     /// depend on the free volume.
     ///
     /// This is `2^(d + 1)` times the k-nearest PRM* and RRG bound `e (1 + 1/d)` (Theorems 35 and
-    /// 37), which OMPL uses for RRT* too and which works well in practice; the theorem only
-    /// guarantees the larger one.
+    /// 37). OMPL's RRT* uses this bound times a rewire factor of 1.1.
     #[must_use]
     pub fn k_constant_lower_bound(dimension: usize) -> f64 {
         libm::pow(2.0, dimension_f64(dimension) + 1.0) * k_constant_lower_bound(dimension)
