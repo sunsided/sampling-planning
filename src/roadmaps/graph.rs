@@ -27,11 +27,11 @@ pub(super) struct Route {
 
 /// A priority-queue entry ordered by cost, then by node id, both ascending.
 #[derive(Debug, Clone, Copy)]
-struct Entry {
+pub(super) struct Entry {
     /// The tentative cost of `node`.
-    cost: f64,
+    pub(super) cost: f64,
     /// The node.
-    node: usize,
+    pub(super) node: usize,
 }
 
 impl PartialEq for Entry {

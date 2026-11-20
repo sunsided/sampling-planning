@@ -14,11 +14,13 @@
 //!     Dijkstra -->|lazy: invalid edge| Query
 //! ```
 
+mod fmt_star;
 mod graph;
 mod prm;
 
 use core::fmt;
 
+pub use fmt_star::{FmtStar, FmtStarConfig};
 pub use prm::{Connection, Prm, PrmConfig};
 
 use crate::Validity;

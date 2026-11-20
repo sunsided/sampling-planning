@@ -20,6 +20,7 @@ Pre-release; the API will change. Implemented:
   (bidirectional).
 - Roadmaps: PRM (fixed radius), PRM* (shrinking radius), lazy PRM; multi-query, with
   Dijkstra queries on a reusable roadmap.
+- Batch planners: FMT* (fast marching tree).
 - Path post-processing: greedy and randomized shortcutting (`shortcut`, `shortcut_random`).
 - Nearest neighbors: `LinearScan` (any metric), `KdTree` (Euclidean spaces).
 - Building blocks: `Euclidean<N>` spaces, `UniformBox` sampling, straight-line steering,

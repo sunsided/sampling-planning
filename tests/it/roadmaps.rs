@@ -4,7 +4,7 @@ use rand_core::SeedableRng;
 use rand_pcg::Pcg64Mcg;
 use sampling_planning::{
     Euclidean, GoalRegion, KdTree, Path, UniformBox, Validity, ValidityChecker,
-    roadmaps::{Prm, PrmConfig},
+    roadmaps::{FmtStar, FmtStarConfig, Prm, PrmConfig},
 };
 
 use crate::SLALOM_OPTIMUM;
@@ -100,4 +100,71 @@ fn fixed_radius_prm_with_kd_tree_matches_linear_scan() {
 
     assert_eq!(path, reference);
     assert_solves_with(&slalom(), &path.expect("connected"), 1.0);
+}
+
+/// FMT* on the slalom with `samples` samples and a fixed seed.
+fn fmt_slalom(samples: usize, seed: u64) -> Option<Path<[f64; 2]>> {
+    let world = slalom();
+    let config = FmtStarConfig {
+        gamma: 1.5 * FmtStarConfig::gamma_lower_bound(2, 100.0),
+    };
+    let mut fmt = FmtStar::with_nearest_neighbors(
+        world.space,
+        world.sampler,
+        world.checker,
+        config,
+        KdTree::default(),
+    )
+    .expect("valid");
+
+    fmt.plan(
+        &world.start,
+        &world.goal,
+        samples,
+        &mut Pcg64Mcg::seed_from_u64(seed),
+    )
+    .expect("valid start")
+}
+
+#[test]
+fn fmt_star_finds_valid_paths_reproducibly() {
+    for seed in 0..3 {
+        let path = fmt_slalom(1500, seed).expect("FMT* solves the slalom");
+
+        assert_solves_with(&slalom(), &path, f64::INFINITY);
+        assert!(path.cost >= SLALOM_OPTIMUM);
+        assert_eq!(Some(path), fmt_slalom(1500, seed));
+    }
+}
+
+#[test]
+fn fmt_star_improves_with_larger_batches() {
+    for seed in 0..3 {
+        let small = fmt_slalom(300, seed).expect("solved").cost;
+        let large = fmt_slalom(5000, seed).expect("solved").cost;
+
+        assert!(large < small, "seed {seed}: {large} vs {small}");
+        assert!(large < SLALOM_OPTIMUM * 1.05, "seed {seed}: {large}");
+    }
+}
+
+#[test]
+fn fmt_star_reports_disconnected_batches() {
+    let mut world = slalom();
+    world.checker.obstacles.push(([0.0, 5.0], [10.0, 5.5]));
+    let mut fmt = FmtStar::new(
+        world.space,
+        world.sampler,
+        world.checker,
+        FmtStarConfig { gamma: 5.0 },
+    )
+    .expect("valid");
+
+    let path = fmt.plan(
+        &world.start,
+        &world.goal,
+        500,
+        &mut Pcg64Mcg::seed_from_u64(1),
+    );
+    assert_eq!(path, Ok(None));
 }
