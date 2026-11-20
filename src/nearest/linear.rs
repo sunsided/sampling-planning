@@ -2,7 +2,7 @@
 
 use alloc::vec::Vec;
 
-use super::NearestNeighbors;
+use super::{NearestNeighbors, RemovableNeighbors};
 use crate::StateSpace;
 
 /// Checks every stored state on each query: O(n) per query, no preprocessing.
@@ -57,6 +57,19 @@ impl<Sp: StateSpace> NearestNeighbors<Sp> for LinearScan<Sp::State> {
     }
 }
 
+impl<Sp: StateSpace> RemovableNeighbors<Sp> for LinearScan<Sp::State> {
+    /// Removes the node with `id` in `O(n)`, keeping the insertion order of the rest.
+    fn remove(&mut self, id: usize) -> bool {
+        let Some(index) = self.entries.iter().position(|(entry, _)| *entry == id) else {
+            return false;
+        };
+
+        self.entries.remove(index);
+
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,5 +109,14 @@ mod tests {
         points().within_radius(&Euclidean::<1>, &[3.0], 1.0, &mut out);
 
         assert_eq!(out, [11, 12, 13]);
+    }
+
+    #[test]
+    fn remove_forgets_one_node() {
+        let mut nn = points();
+
+        assert!(RemovableNeighbors::<Euclidean<1>>::remove(&mut nn, 11));
+        assert!(!RemovableNeighbors::<Euclidean<1>>::remove(&mut nn, 11));
+        assert_eq!(nn.nearest(&Euclidean::<1>, &[2.1]), Some(13));
     }
 }

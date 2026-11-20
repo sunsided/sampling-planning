@@ -5,7 +5,7 @@ mod world;
 use rand_core::SeedableRng;
 use rand_pcg::Pcg64Mcg;
 use sampling_planning::{
-    Euclidean, StraightLine, UniformBox, Validity,
+    Euclidean, KdTree, StraightLine, UniformBox, Validity,
     trees::{Error, Rrt, RrtConfig, RrtStar, RrtStarConfig},
 };
 use world::{Boxes, World2d, assert_solves, problem, slalom};
@@ -75,6 +75,15 @@ fn rrt_star_is_reproducible_for_a_seed() {
     let b = rrt_star(slalom(), 5, 1000).best_path();
 
     assert_eq!(a, b);
+}
+
+#[test]
+fn kd_tree_gives_the_same_rrt_star_run_as_linear_scan() {
+    let mut planner = RrtStar::with_nearest_neighbors(slalom(), star_config(), KdTree::default())
+        .expect("valid problem");
+    planner.run(1500, &mut Pcg64Mcg::seed_from_u64(5));
+
+    assert_eq!(planner.best_path(), rrt_star(slalom(), 5, 1500).best_path());
 }
 
 #[test]

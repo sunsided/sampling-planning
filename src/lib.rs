@@ -90,7 +90,7 @@ pub mod trees;
 mod validity;
 
 pub use goal::GoalRegion;
-pub use nearest::{LinearScan, NearestNeighbors};
+pub use nearest::{KdTree, LinearScan, NearestNeighbors, RemovableNeighbors};
 pub use problem::{Path, Problem};
 pub use rand_core;
 pub use sampler::{Sampler, UniformBox, unit_f64};

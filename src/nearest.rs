@@ -1,10 +1,12 @@
 //! Nearest-neighbor structures over planner nodes.
 
+mod kd_tree;
 mod linear;
 
 use alloc::vec::Vec;
 
 use crate::StateSpace;
+pub use kd_tree::KdTree;
 pub use linear::LinearScan;
 
 /// Stores planner nodes by id and answers proximity queries under a [`StateSpace`] metric.
@@ -29,4 +31,13 @@ pub trait NearestNeighbors<Sp: StateSpace> {
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
+}
+
+/// A [`NearestNeighbors`] structure that can also forget nodes.
+///
+/// Planners that keep only a sparse set of active nodes (SST) need this. It is a separate trait
+/// so that structures that cannot remove cheaply still work with every other planner.
+pub trait RemovableNeighbors<Sp: StateSpace>: NearestNeighbors<Sp> {
+    /// Removes the node with `id`. Returns whether such a node was stored.
+    fn remove(&mut self, id: usize) -> bool;
 }

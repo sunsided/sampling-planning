@@ -14,9 +14,14 @@ This is a **motion planning** crate. It is named `sampling-planning` because the
 
 ## Status
 
-Pre-release. RRT and RRT* work in Euclidean spaces with a uniform box sampler, linear-scan
-nearest neighbors and straight-line steering. Validity checks are three-valued (valid,
-invalid, unknown); planners treat unknown as invalid. The API will change.
+Pre-release; the API will change. Implemented:
+
+- Tree planners: RRT, RRT*.
+- Nearest neighbors: `LinearScan` (any metric), `KdTree` (Euclidean spaces).
+- Building blocks: `Euclidean<N>` spaces, `UniformBox` sampling, straight-line steering,
+  ball-shaped goal regions.
+
+Validity checks are three-valued (valid, invalid, unknown); planners treat unknown as invalid.
 
 See [docs/design.md](docs/design.md) for the design and milestones, and run the example:
 
