@@ -17,6 +17,7 @@ This is a **motion planning** crate. It is named `sampling-planning` because the
 Pre-release; the API will change. Implemented:
 
 - Tree planners: RRT, RRT*.
+- Path post-processing: greedy and randomized shortcutting (`shortcut`, `shortcut_random`).
 - Nearest neighbors: `LinearScan` (any metric), `KdTree` (Euclidean spaces).
 - Building blocks: `Euclidean<N>` spaces, `UniformBox` sampling, straight-line steering,
   ball-shaped goal regions.

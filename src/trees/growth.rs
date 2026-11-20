@@ -71,20 +71,28 @@ where
     /// Returns the nearest node id and the steered state; the motion is not checked yet.
     pub(super) fn propose<R: Rng + ?Sized>(&mut self, rng: &mut R) -> (usize, Sp::State) {
         let target = self.draw(rng);
+
+        self.propose_toward(&target)
+    }
+
+    /// Picks the nearest node to `target` and steers from it toward `target`.
+    ///
+    /// Returns the nearest node id and the steered state; the motion is not checked yet.
+    pub(super) fn propose_toward(&self, target: &Sp::State) -> (usize, Sp::State) {
         let nearest = self
             .nn
-            .nearest(&self.problem.space, &target)
+            .nearest(&self.problem.space, target)
             .expect("the tree always holds the root");
         let new =
             self.problem
                 .steering
-                .steer(&self.problem.space, self.tree.state(nearest), &target);
+                .steer(&self.problem.space, self.tree.state(nearest), target);
 
         (nearest, new)
     }
 
     /// Draws the goal center with probability `goal_bias`, otherwise a sampler state.
-    fn draw<R: Rng + ?Sized>(&mut self, rng: &mut R) -> Sp::State {
+    pub(super) fn draw<R: Rng + ?Sized>(&mut self, rng: &mut R) -> Sp::State {
         if unit_f64(rng) < self.goal_bias {
             self.problem.goal.center().clone()
         } else {

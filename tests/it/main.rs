@@ -5,10 +5,15 @@ mod world;
 use rand_core::SeedableRng;
 use rand_pcg::Pcg64Mcg;
 use sampling_planning::{
-    Euclidean, KdTree, StraightLine, UniformBox, Validity,
+    Euclidean, KdTree, StraightLine, UniformBox, Validity, shortcut, shortcut_random,
     trees::{Error, Rrt, RrtConfig, RrtStar, RrtStarConfig},
 };
-use world::{Boxes, World2d, assert_solves, problem, slalom};
+use world::{Boxes, World2d, assert_solves, assert_solves_with, problem, slalom};
+
+/// The optimal slalom cost, rounded down: the taut string from (1, 1) over the corners (4, 7)
+/// and (5, 7), under (6, 3) and (7, 3), to the goal ball of radius 0.5 around (9, 9), which is
+/// `19.1559 - 0.5`. No solution can be cheaper.
+const SLALOM_OPTIMUM: f64 = 18.655;
 
 /// An RRT* config whose radius constant is safe for the 10 x 10 world.
 fn star_config() -> RrtStarConfig {
@@ -66,6 +71,10 @@ fn rrt_star_cost_never_increases() {
     assert!(
         costs.last() < costs.first(),
         "RRT* improved the path: {costs:?}"
+    );
+    assert!(
+        costs.iter().all(|&cost| cost >= SLALOM_OPTIMUM),
+        "{costs:?}"
     );
 }
 
@@ -141,4 +150,23 @@ fn bad_config_is_rejected() {
         RrtStar::new(slalom(), RrtStarConfig::new(1.0, f64::NAN)).err(),
         Some(Error::InvalidMaxRadius)
     );
+}
+
+#[test]
+fn shortcutting_an_rrt_path_keeps_it_valid_and_shortens_it() {
+    let world = slalom();
+    let mut rng = Pcg64Mcg::seed_from_u64(3);
+    let mut planner = Rrt::new(slalom(), RrtConfig::default()).expect("valid problem");
+    let path = planner
+        .solve(20_000, &mut rng)
+        .expect("RRT solves the slalom");
+
+    let greedy = shortcut(&world.space, &world.checker, &path, f64::INFINITY);
+    assert_solves_with(&world, &greedy, f64::INFINITY);
+    assert!(greedy.cost < path.cost);
+
+    let smoothed = shortcut_random(&world.space, &world.checker, &greedy, 2.0, 300, &mut rng);
+    assert_solves_with(&world, &smoothed, f64::INFINITY);
+    assert!(smoothed.cost <= greedy.cost);
+    assert!(smoothed.cost >= SLALOM_OPTIMUM, "{}", smoothed.cost);
 }
