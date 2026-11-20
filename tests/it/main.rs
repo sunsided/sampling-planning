@@ -9,7 +9,7 @@ use rand_pcg::Pcg64Mcg;
 use sampling_planning::{
     Euclidean, KdTree, Problem, Sampler, StraightLine, UniformBox, Validity, shortcut,
     shortcut_random,
-    trees::{Error, Rrt, RrtConfig, RrtConnect, RrtStar, RrtStarConfig},
+    trees::{Error, Rrt, RrtConfig, RrtConnect, RrtSharp, RrtStar, RrtStarConfig},
 };
 use world::{
     Boxes, POLE_OPTIMUM, World2d, assert_solves, assert_solves_with, pole, problem, slalom,
@@ -322,4 +322,55 @@ fn informed_sampling_changes_nothing_when_the_informed_set_covers_the_box() {
         informed.best_path(),
         rrt_star(slalom(), 6, 2000).best_path()
     );
+}
+
+#[test]
+fn rrt_sharp_solves_improves_and_beats_rrt_star() {
+    let (mut sharp_total, mut star_total) = (0.0, 0.0);
+
+    for seed in 0..3 {
+        let mut sharp = RrtSharp::new(slalom(), star_config()).expect("valid problem");
+        let mut rng = Pcg64Mcg::seed_from_u64(seed);
+        let mut costs = Vec::new();
+
+        for _ in 0..10 {
+            sharp.run(200, &mut rng);
+            costs.extend(sharp.best_path().map(|path| path.cost));
+        }
+
+        let path = sharp.best_path().expect("RRT# solves the slalom");
+        assert_solves(&slalom(), &path);
+        assert!(costs.windows(2).all(|pair| pair[1] <= pair[0]), "{costs:?}");
+        assert!(
+            costs.iter().all(|&cost| cost >= SLALOM_OPTIMUM),
+            "{costs:?}"
+        );
+
+        sharp_total += path.cost;
+        star_total += rrt_star(slalom(), seed, 2000)
+            .best_path()
+            .expect("solved")
+            .cost;
+    }
+
+    assert!(
+        sharp_total < star_total,
+        "RRT# {sharp_total} vs RRT* {star_total}"
+    );
+}
+
+#[test]
+fn rrt_sharp_variants_match_across_indices_and_stay_valid() {
+    for config in [star_config(), star_k_config(), star_config().informed()] {
+        let mut linear = RrtSharp::new(pole(), config).expect("valid problem");
+        let mut kd =
+            RrtSharp::with_nearest_neighbors(pole(), config, KdTree::default()).expect("valid");
+        linear.run(1500, &mut Pcg64Mcg::seed_from_u64(9));
+        kd.run(1500, &mut Pcg64Mcg::seed_from_u64(9));
+
+        let path = linear.best_path().expect("RRT# solves the pole world");
+        assert_solves(&pole(), &path);
+        assert!(path.cost >= POLE_OPTIMUM);
+        assert_eq!(Some(path), kd.best_path());
+    }
 }

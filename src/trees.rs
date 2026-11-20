@@ -1,4 +1,4 @@
-//! Tree-expanding planners: RRT, RRT* (optionally informed) and RRT-Connect.
+//! Tree-expanding planners: RRT, RRT* (optionally informed), RRT# and RRT-Connect.
 //!
 //! Both planners are incremental. [`Rrt::step`] and [`RrtStar::step`] do one iteration,
 //! `run` does many, and `best_path` returns the current best solution. One iteration:
@@ -16,6 +16,7 @@
 mod growth;
 mod rrt;
 mod rrt_connect;
+mod rrt_sharp;
 mod rrt_star;
 mod targets;
 mod tree;
@@ -24,6 +25,7 @@ use core::fmt;
 
 pub use rrt::{Rrt, RrtConfig};
 pub use rrt_connect::RrtConnect;
+pub use rrt_sharp::RrtSharp;
 pub use rrt_star::{INFORMED_ATTEMPTS, RrtStar, RrtStarConfig};
 
 use crate::Validity;

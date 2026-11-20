@@ -1,7 +1,7 @@
 //! # Sampling-based motion planning
 //!
-//! Motion planning with sampling-based planners: RRT, RRT*, RRT-Connect, PRM, PRM*, FMT*, SST
-//! and SST*.
+//! Motion planning with sampling-based planners: RRT, RRT*, RRT#, RRT-Connect, PRM, PRM*, FMT*,
+//! SST and SST*.
 //!
 //! This is a **motion planning** crate. It is named `sampling-planning` because the crate name `motion-planning` was already taken on crates.io.
 //!
@@ -65,8 +65,9 @@
 //!
 //! ## Planners
 //!
-//! - [`trees`]: [`Rrt`](trees::Rrt), [`RrtStar`](trees::RrtStar) (optionally informed) and
-//!   the bidirectional [`RrtConnect`](trees::RrtConnect), all over a [`Problem`].
+//! - [`trees`]: [`Rrt`](trees::Rrt), [`RrtStar`](trees::RrtStar) (radius or k-nearest,
+//!   optionally informed), [`RrtSharp`](trees::RrtSharp) and the bidirectional
+//!   [`RrtConnect`](trees::RrtConnect), all over a [`Problem`].
 //! - [`roadmaps`]: the multi-query [`Prm`](roadmaps::Prm) (PRM, PRM*, lazy PRM) and the batch
 //!   planner [`FmtStar`](roadmaps::FmtStar). They need no steering function.
 //! - [`kinodynamic`]: [`Sst`](kinodynamic::Sst) (SST and SST*) over a
@@ -76,7 +77,7 @@
 //!
 //! ## Planned scope
 //!
-//! RRT#, BIT*, AIT*, ABIT*, EIT*, SPARS, SPARS2, BFMT*, KPIECE, and more state spaces (SO(2),
+//! BIT*, AIT*, ABIT*, EIT*, SPARS, SPARS2, BFMT*, KPIECE, and more state spaces (SO(2),
 //! SE(2), SE(3), compound spaces).
 //!
 //! ## Status

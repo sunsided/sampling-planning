@@ -8,7 +8,7 @@ for continuous configuration spaces. It is not a task planner. The name
 
 | Module | Planners |
 | --- | --- |
-| `trees` | RRT, RRT*, Informed RRT*, RRT-Connect; later RRT# |
+| `trees` | RRT, RRT*, RRT*-k, Informed RRT*, RRT#, RRT-Connect |
 | `informed` | later: BIT*, AIT*, ABIT*, EIT* |
 | `roadmaps` | PRM, PRM*, lazy PRM, FMT*; later SPARS, SPARS2, BFMT* |
 | `kinodynamic` | SST, SST*; later KPIECE |
@@ -213,6 +213,19 @@ admissible for a ball goal. Goal bias still applies.
   `false`, so a custom space over `[f64; N]` with another metric never gets
   Euclidean ellipsoids.
 
+RRT# (`RrtSharp`, Arslan and Tsiotras 2013) takes an `RrtStarConfig` and
+uses the same extension and neighbor rule, but links each new vertex both ways
+to its neighbors (RRG) and then replans instead of rewiring. Each vertex keeps
+`g` (committed cost) and `lmc` (one-step lookahead); vertices with `lmc < g`
+sit in a queue keyed by `lmc + h`, `h = max(0, d(x, center) - tolerance)`.
+Replanning pops the cheapest key, commits `g = lmc` and relaxes the out-edges,
+until the top key cannot beat the best goal vertex. The graph only grows and
+edge costs are fixed, so costs only decrease and LPA*'s underconsistent case
+never occurs. Edges are checked lazily, in travel direction, and at most once:
+only when they would lower an `lmc`. A unit test compares the best cost after
+every batch of iterations with Dijkstra over all eagerly checked graph edges.
+The paper's secondary key `min(g, lmc)` is replaced by the vertex id.
+
 RRT-Connect roots a second tree at the goal center. Goal-tree edges are
 traveled toward the root, so they are checked in that direction
 (`check_state(new)`, then `check_motion(new, parent)`). The trees meet when a
@@ -320,6 +333,8 @@ Float math (`sqrt`, `ln`, `powf`) is not in `core`. Decision: always use
   planning.* TR 98-11, Iowa State University, 1998.
 - S. M. LaValle and J. J. Kuffner. *Randomized kinodynamic planning.* IJRR
   20(5), 2001.
+- O. Arslan and P. Tsiotras. *Use of relaxation methods in sampling-based
+  algorithms for optimal motion planning.* ICRA 2013. (RRT#.)
 - S. Karaman and E. Frazzoli. *Sampling-based algorithms for optimal motion
   planning.* IJRR 30(7), 2011. (RRT*, PRM*, radius bounds.)
 - L. E. Kavraki, P. Švestka, J.-C. Latombe and M. H. Overmars. *Probabilistic
@@ -340,7 +355,7 @@ Float math (`sqrt`, `ln`, `powf`) is not in `core`. Decision: always use
 2. **Roadmaps:** PRM, PRM*, lazy PRM, the k-d tree and k-nearest queries are
    done.
 3. **Informed trees:** informed sampling (direct for Euclidean boxes,
-   rejection otherwise) and RRT-Connect are done; RRT#, BIT*, then AIT*/EIT*
+   rejection otherwise), RRT-Connect and RRT# are done; BIT*, then AIT*/EIT*
    are open.
 4. **FMT\*/BFMT\*:** FMT* is done, BFMT* is open.
 5. **Kinodynamic:** `Propagator`, SST and SST* are done, KPIECE is open.
