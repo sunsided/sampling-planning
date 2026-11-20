@@ -113,27 +113,37 @@ pub trait NearestNeighbors<Sp: StateSpace> {
     fn insert(&mut self, id: usize, state: Sp::State);
     fn nearest(&self, space: &Sp, query: &Sp::State) -> Option<usize>;
     fn within_radius(&self, space: &Sp, query: &Sp::State, radius: f64, out: &mut Vec<usize>);
+    fn k_nearest(&self, space: &Sp, query: &Sp::State, k: usize, out: &mut Vec<usize>);
     fn len(&self) -> usize;
 }
 ```
 
 Ids are the planner's node ids, so the structure needs no back-pointers.
 Ties break toward the earliest inserted state, which keeps runs reproducible.
-`within_radius` writes into a caller buffer to avoid an allocation per
-iteration.
+`within_radius` and `k_nearest` write into a caller buffer to avoid an
+allocation per iteration. `k_nearest` returns ids closest first, equal
+distances by insertion order; the same order decides the cut at the `k`-th
+place. Both structures select through one bounded max-heap type, so they agree
+on every tie.
 
 Shipped: `LinearScan` (any metric) and `KdTree<N>` (only for `Euclidean<N>`).
 The k-d tree compares the same `distance` values as the linear scan and pads
 its pruning bound by a relative `1e-9`, so both return identical ids; a test
-cross-checks them on inputs full of exact ties. It is incremental and never
-rebalances, which is fine for random insertions.
+cross-checks them on inputs full of exact ties, and another on random
+insert, remove and re-insert sequences. It is incremental, which is fine for
+random insertions; `KdTree::rebalance` rebuilds it balanced (median splits)
+after sorted bulk insertions.
 
 `RemovableNeighbors: NearestNeighbors` adds `remove(id)` as a separate trait,
 so only planners that need deletion (SST's active set) require it. Both
-structures implement it (the k-d tree with tombstones).
+structures implement it. The k-d tree finds the node through an id map
+(`BTreeMap`, alloc only), marks it removed, and rebuilds balanced over the live
+nodes once removed nodes outnumber live ones (and number at least 16), so
+removal is `O(log n)` amortized and memory tracks the live count. A rebuild
+keeps the relative insertion order, which is the tie-break rank; a re-inserted
+id counts as the newest node, as in `LinearScan`.
 
-Later: k-nearest queries (for k-nearest RRT*/PRM*) and GNAT for general
-metrics.
+Later: GNAT for general metrics.
 
 ### `Steering`
 
@@ -301,8 +311,8 @@ Float math (`sqrt`, `ln`, `powf`) is not in `core`. Decision: always use
 1. **Foundations and RRT/RRT\*** (done): traits above, `Euclidean<N>`,
    `UniformBox<N>`, `LinearScan`, `StraightLine`, `GoalRegion`, RRT and RRT*
    with goal bias, 2D obstacle example, integration tests.
-2. **Roadmaps:** PRM, PRM*, lazy PRM and the k-d tree are done; k-nearest
-   queries are open.
+2. **Roadmaps:** PRM, PRM*, lazy PRM, the k-d tree and k-nearest queries are
+   done.
 3. **Informed trees:** rejection-based informed sampling and RRT-Connect are
    done; direct ellipsoid sampling, RRT#, BIT*, then AIT*/EIT* are open.
 4. **FMT\*/BFMT\*:** FMT* is done, BFMT* is open.

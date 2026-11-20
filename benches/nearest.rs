@@ -18,7 +18,7 @@ fn main() {
     criterion.final_summary();
 }
 
-/// Compares [`LinearScan`] and [`KdTree`] nearest queries over [`SIZE`] random 3D states.
+/// Compares [`LinearScan`] and [`KdTree`] nearest and 10-nearest queries over [`SIZE`] random 3D states.
 fn bench_nearest(criterion: &mut Criterion) {
     let mut sampler = UniformBox::new([0.0; 3], [10.0; 3]);
     let mut rng = Pcg64Mcg::seed_from_u64(1);
@@ -45,6 +45,24 @@ fn bench_nearest(criterion: &mut Criterion) {
         b.iter(|| {
             for query in &queries {
                 black_box(kd.nearest(&Euclidean::<3>, black_box(query)));
+            }
+        });
+    });
+    group.bench_function("linear_scan_k10", |b| {
+        let mut out = Vec::new();
+        b.iter(|| {
+            for query in &queries {
+                linear.k_nearest(&Euclidean::<3>, black_box(query), 10, &mut out);
+                black_box(&out);
+            }
+        });
+    });
+    group.bench_function("kd_tree_k10", |b| {
+        let mut out = Vec::new();
+        b.iter(|| {
+            for query in &queries {
+                kd.k_nearest(&Euclidean::<3>, black_box(query), 10, &mut out);
+                black_box(&out);
             }
         });
     });

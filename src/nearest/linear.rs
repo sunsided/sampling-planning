@@ -2,7 +2,7 @@
 
 use alloc::vec::Vec;
 
-use super::{NearestNeighbors, RemovableNeighbors};
+use super::{NearestNeighbors, RemovableNeighbors, k_best::KBest};
 use crate::StateSpace;
 
 /// Checks every stored state on each query: O(n) per query, no preprocessing.
@@ -49,6 +49,21 @@ impl<Sp: StateSpace> NearestNeighbors<Sp> for LinearScan<Sp::State> {
                 .iter()
                 .filter(|(_, state)| space.distance(state, query) <= radius)
                 .map(|(id, _)| *id),
+        );
+    }
+
+    fn k_nearest(&self, space: &Sp, query: &Sp::State, k: usize, out: &mut Vec<usize>) {
+        let mut best = KBest::new(k);
+
+        for (rank, (_, state)) in self.entries.iter().enumerate() {
+            best.offer(space.distance(state, query), rank);
+        }
+
+        out.clear();
+        out.extend(
+            best.into_sorted_ranks()
+                .into_iter()
+                .map(|rank| self.entries[rank].0),
         );
     }
 
@@ -109,6 +124,25 @@ mod tests {
         points().within_radius(&Euclidean::<1>, &[3.0], 1.0, &mut out);
 
         assert_eq!(out, [11, 12, 13]);
+    }
+
+    #[test]
+    fn k_nearest_orders_by_distance_then_insertion() {
+        let nn = points();
+        let mut out = vec![99];
+
+        nn.k_nearest(&Euclidean::<1>, &[2.0], 3, &mut out);
+        assert_eq!(
+            out,
+            [11, 13, 10],
+            "the tie at the cut goes to the earlier node"
+        );
+
+        nn.k_nearest(&Euclidean::<1>, &[2.9], 10, &mut out);
+        assert_eq!(out, [11, 13, 12, 10]);
+
+        nn.k_nearest(&Euclidean::<1>, &[2.9], 0, &mut out);
+        assert_eq!(out, [] as [usize; 0]);
     }
 
     #[test]

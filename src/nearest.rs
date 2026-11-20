@@ -1,5 +1,6 @@
 //! Nearest-neighbor structures over planner nodes.
 
+mod k_best;
 mod kd_tree;
 mod linear;
 
@@ -24,6 +25,14 @@ pub trait NearestNeighbors<Sp: StateSpace> {
     /// in insertion order.
     fn within_radius(&self, space: &Sp, query: &Sp::State, radius: f64, out: &mut Vec<usize>);
 
+    /// Replaces the contents of `out` with the ids of the `k` nodes closest to `query`, closest
+    /// first.
+    ///
+    /// Equal distances are ordered by insertion, earliest first, and the same rule decides which
+    /// nodes make the cut at the `k`-th place. Fewer than `k` ids are returned only when fewer
+    /// nodes are stored. Nodes at a NaN distance are never returned.
+    fn k_nearest(&self, space: &Sp, query: &Sp::State, k: usize, out: &mut Vec<usize>);
+
     /// The number of stored nodes.
     fn len(&self) -> usize;
 
@@ -39,5 +48,9 @@ pub trait NearestNeighbors<Sp: StateSpace> {
 /// so that structures that cannot remove cheaply still work with every other planner.
 pub trait RemovableNeighbors<Sp: StateSpace>: NearestNeighbors<Sp> {
     /// Removes the node with `id`. Returns whether such a node was stored.
+    ///
+    /// Ids should be unique among the stored nodes; if an id was inserted twice, which of the
+    /// two nodes is removed depends on the structure. A removed id may be inserted again, and
+    /// then counts as the newest node for tie breaking.
     fn remove(&mut self, id: usize) -> bool;
 }

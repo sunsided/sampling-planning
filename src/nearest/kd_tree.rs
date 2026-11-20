@@ -1,8 +1,8 @@
 //! An incremental k-d tree for Euclidean spaces.
 
-use alloc::vec::Vec;
+use alloc::{collections::BTreeMap, vec::Vec};
 
-use super::NearestNeighbors;
+use super::{NearestNeighbors, k_best::KBest};
 use crate::{Euclidean, StateSpace};
 
 /// Relative slack added to pruning bounds.
@@ -17,7 +17,10 @@ const PRUNE_SLACK: f64 = 1e-9;
 ///
 /// Nodes are inserted one at a time without rebalancing. The split axis cycles with the
 /// depth. Planners insert random samples, which keeps the tree balanced in expectation; a
-/// sorted insertion order degrades it to a list.
+/// sorted insertion order degrades it to a list until [`KdTree::rebalance`] is called.
+///
+/// Removal ([`RemovableNeighbors`](crate::RemovableNeighbors)) finds the node through an id
+/// index, marks it, and rebuilds the tree balanced once removed nodes outnumber live ones.
 ///
 /// Queries return exactly what [`LinearScan`](crate::LinearScan) returns, including its tie
 /// breaking toward the earliest inserted state, because both compare the same
@@ -37,8 +40,17 @@ const PRUNE_SLACK: f64 = 1e-9;
 /// ```
 #[derive(Debug, Clone)]
 pub struct KdTree<const N: usize> {
-    /// All nodes in insertion order; index 0 is the root.
+    /// All stored nodes, removed ones included until the next rebuild, in insertion order.
+    ///
+    /// The position of a node is its insertion rank, which breaks distance ties. Rebuilds drop
+    /// removed nodes but keep the relative order of the rest.
     nodes: Vec<Node<N>>,
+    /// The index of the root node in `nodes`; `None` while the tree has no nodes.
+    root: Option<usize>,
+    /// Maps each stored id to the index of its live node, for `O(log n)` removal.
+    ///
+    /// When an id is inserted twice, the newer node wins.
+    by_id: BTreeMap<usize, usize>,
     /// The number of nodes that were not removed.
     live: usize,
 }
@@ -60,16 +72,153 @@ struct Node<const N: usize> {
     removed: bool,
 }
 
+/// A pending subtree of the balanced build: a range of `order` and where its root attaches.
+#[derive(Debug, Clone, Copy)]
+struct BuildTask {
+    /// The first position of the range in the build order.
+    start: usize,
+    /// One past the last position of the range.
+    end: usize,
+    /// The depth of the subtree root; its split axis is `depth % N`.
+    depth: usize,
+    /// The parent node and whether the subtree is its left child; `None` for the root.
+    parent: Option<(usize, bool)>,
+}
+
+/// The fewest removed nodes that trigger a rebuild, so that tiny trees do not rebuild on every
+/// removal.
+const MIN_REBUILD_TOMBSTONES: usize = 16;
+
 impl<const N: usize> Default for KdTree<N> {
     fn default() -> Self {
         Self {
             nodes: Vec::new(),
+            root: None,
+            by_id: BTreeMap::new(),
             live: 0,
         }
     }
 }
 
 impl<const N: usize> KdTree<N> {
+    /// Rebuilds the tree as a balanced k-d tree over the live nodes, dropping removed ones.
+    ///
+    /// Each subtree splits at the median of its states along the axis of its depth, so the
+    /// depth is `O(log n)` whatever the insertion order was. Insertion ranks keep their relative
+    /// order, so query results do not change. Costs `O(n log^2 n)`.
+    ///
+    /// Removal calls this automatically once removed nodes outnumber live ones. Call it by hand
+    /// after inserting many states in sorted order, which degrades the incremental tree to a
+    /// list.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sampling_planning::{Euclidean, KdTree, NearestNeighbors};
+    ///
+    /// let mut tree = KdTree::<1>::default();
+    /// for id in 0..100 {
+    ///     tree.insert(id, [f64::from(u32::try_from(id).expect("small"))]);
+    /// }
+    ///
+    /// tree.rebalance();
+    /// assert_eq!(tree.nearest(&Euclidean::<1>, &[41.2]), Some(41));
+    /// ```
+    pub fn rebalance(&mut self) {
+        self.nodes.retain(|node| !node.removed);
+        self.by_id = self
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(index, node)| (node.id, index))
+            .collect();
+        self.live = self.nodes.len();
+        self.root = self.build_balanced();
+    }
+
+    /// Links all nodes into a balanced tree and returns the root index.
+    fn build_balanced(&mut self) -> Option<usize> {
+        let mut order: Vec<usize> = (0..self.nodes.len()).collect();
+        let mut root = None;
+        let mut tasks = alloc::vec![BuildTask {
+            start: 0,
+            end: order.len(),
+            depth: 0,
+            parent: None,
+        }];
+
+        while let Some(task) = tasks.pop() {
+            if task.start == task.end {
+                continue;
+            }
+
+            let median = self.split_at_median(&mut order[task.start..task.end], task.depth);
+            let node = order[task.start + median];
+            self.attach(node, task, &mut root);
+
+            let mid = task.start + median;
+            tasks.push(BuildTask {
+                start: task.start,
+                end: mid,
+                depth: task.depth + 1,
+                parent: Some((node, true)),
+            });
+            tasks.push(BuildTask {
+                start: mid + 1,
+                end: task.end,
+                depth: task.depth + 1,
+                parent: Some((node, false)),
+            });
+        }
+
+        root
+    }
+
+    /// Sorts `range` along the axis of `depth` and returns the position of the splitting node:
+    /// the first of the nodes that share the median coordinate, so that everything before it
+    /// is strictly smaller, as [`KdTree::goes_left`] expects.
+    #[expect(
+        clippy::float_cmp,
+        reason = "only exactly equal coordinates may go to the right subtree"
+    )]
+    fn split_at_median(&self, range: &mut [usize], depth: usize) -> usize {
+        let axis = Self::axis_of(depth);
+        let coordinate = |index: usize| Self::coordinate(&self.nodes[index].state, axis);
+        range.sort_by(|&a, &b| coordinate(a).total_cmp(&coordinate(b)).then(a.cmp(&b)));
+
+        let mut median = range.len() / 2;
+        while median > 0 && coordinate(range[median - 1]) == coordinate(range[median]) {
+            median -= 1;
+        }
+
+        median
+    }
+
+    /// Resets node `node` as the root of the subtree described by `task` and links it to its
+    /// parent, or records it as the tree root.
+    fn attach(&mut self, node: usize, task: BuildTask, root: &mut Option<usize>) {
+        let entry = &mut self.nodes[node];
+        entry.axis = Self::axis_of(task.depth);
+        entry.left = None;
+        entry.right = None;
+
+        match task.parent {
+            None => *root = Some(node),
+            Some((parent, true)) => self.nodes[parent].left = Some(node),
+            Some((parent, false)) => self.nodes[parent].right = Some(node),
+        }
+    }
+
+    /// The split axis at `depth`: `depth % N`, or 0 when `N == 0`.
+    const fn axis_of(depth: usize) -> usize {
+        if N == 0 { 0 } else { depth % N }
+    }
+
+    /// The coordinate of `state` along `axis`; 0 when `N == 0`.
+    fn coordinate(state: &[f64; N], axis: usize) -> f64 {
+        if N == 0 { 0.0 } else { state[axis] }
+    }
+
     /// Whether `query` belongs in the left subtree of node `index`.
     fn goes_left(&self, index: usize, query: &[f64; N]) -> bool {
         let node = &self.nodes[index];
@@ -99,9 +248,10 @@ impl<const N: usize> KdTree<N> {
         }
     }
 
-    /// The index of the node whose empty child slot `state` falls into, with the side.
-    fn attachment_point(&self, state: &[f64; N]) -> (usize, bool) {
-        let mut current = 0;
+    /// The index of the node whose empty child slot `state` falls into, with the side, or
+    /// `None` for an empty tree.
+    fn attachment_point(&self, state: &[f64; N]) -> Option<(usize, bool)> {
+        let mut current = self.root?;
 
         loop {
             let left = self.goes_left(current, state);
@@ -113,7 +263,7 @@ impl<const N: usize> KdTree<N> {
 
             match next {
                 Some(child) => current = child,
-                None => return (current, left),
+                None => return Some((current, left)),
             }
         }
     }
@@ -129,27 +279,33 @@ impl<const N: usize> KdTree<N> {
             distance < best_distance || (distance == best_distance && index < best_index)
         })
     }
+
+    /// Whether removed nodes outnumber live ones by enough to make a rebuild pay off.
+    fn needs_rebuild(&self) -> bool {
+        let tombstones = self.nodes.len() - self.live;
+
+        tombstones >= MIN_REBUILD_TOMBSTONES && tombstones > self.live
+    }
 }
 
 impl<const N: usize> NearestNeighbors<Euclidean<N>> for KdTree<N> {
     fn insert(&mut self, id: usize, state: [f64; N]) {
         let index = self.nodes.len();
-        let axis = if self.nodes.is_empty() {
-            0
-        } else {
-            let (parent, left) = self.attachment_point(&state);
-            let parent_node = &mut self.nodes[parent];
-
-            if left {
-                parent_node.left = Some(index);
-            } else {
-                parent_node.right = Some(index);
-            }
-
-            if N == 0 {
+        let axis = match self.attachment_point(&state) {
+            None => {
+                self.root = Some(index);
                 0
-            } else {
-                (parent_node.axis + 1) % N
+            }
+            Some((parent, left)) => {
+                let parent_node = &mut self.nodes[parent];
+
+                if left {
+                    parent_node.left = Some(index);
+                } else {
+                    parent_node.right = Some(index);
+                }
+
+                Self::axis_of(parent_node.axis + 1)
             }
         };
 
@@ -161,6 +317,7 @@ impl<const N: usize> NearestNeighbors<Euclidean<N>> for KdTree<N> {
             right: None,
             removed: false,
         });
+        self.by_id.insert(id, index);
         self.live += 1;
     }
 
@@ -169,10 +326,7 @@ impl<const N: usize> NearestNeighbors<Euclidean<N>> for KdTree<N> {
         // Pending subtrees with a lower bound on their distance, checked when popped so that
         // the bound is compared against the best distance found by then.
         let mut stack = Vec::new();
-
-        if !self.nodes.is_empty() {
-            stack.push((0, 0.0));
-        }
+        stack.extend(self.root.map(|root| (root, 0.0)));
 
         while let Some((index, lower_bound)) = stack.pop() {
             if best.is_some_and(|(d, _)| lower_bound > d * (1.0 + PRUNE_SLACK)) {
@@ -206,10 +360,7 @@ impl<const N: usize> NearestNeighbors<Euclidean<N>> for KdTree<N> {
         let mut hits = Vec::new();
         let mut stack = Vec::new();
         let bound = radius * (1.0 + PRUNE_SLACK);
-
-        if !self.nodes.is_empty() {
-            stack.push(0);
-        }
+        stack.extend(self.root);
 
         while let Some(index) = stack.pop() {
             let node = &self.nodes[index];
@@ -231,26 +382,64 @@ impl<const N: usize> NearestNeighbors<Euclidean<N>> for KdTree<N> {
         out.extend(hits.iter().map(|&index| self.nodes[index].id));
     }
 
+    fn k_nearest(&self, space: &Euclidean<N>, query: &[f64; N], k: usize, out: &mut Vec<usize>) {
+        let mut best = KBest::new(k);
+        let mut stack = Vec::new();
+
+        if k > 0 {
+            stack.extend(self.root.map(|root| (root, 0.0)));
+        }
+
+        while let Some((index, lower_bound)) = stack.pop() {
+            if best
+                .bound()
+                .is_some_and(|worst| lower_bound > worst * (1.0 + PRUNE_SLACK))
+            {
+                continue;
+            }
+
+            let node = &self.nodes[index];
+
+            if !node.removed {
+                best.offer(space.distance(&node.state, query), index);
+            }
+
+            let (near, far) = self.children(index, query);
+            let gap = self.plane_gap(index, query);
+            stack.extend(far.map(|far| (far, gap)));
+            stack.extend(near.map(|near| (near, 0.0)));
+        }
+
+        out.clear();
+        out.extend(
+            best.into_sorted_ranks()
+                .into_iter()
+                .map(|index| self.nodes[index].id),
+        );
+    }
+
     fn len(&self) -> usize {
         self.live
     }
 }
 
 impl<const N: usize> super::RemovableNeighbors<Euclidean<N>> for KdTree<N> {
-    /// Marks the live node with `id` as removed.
+    /// Removes the node with `id` in `O(log n)` amortized.
     ///
-    /// shortcut: finds the node by a linear search, `O(n)`; add an id index if removal shows up
-    /// in profiles.
-    ///
-    /// The node keeps splitting space, so the tree shape and the cost of later queries do not
-    /// shrink.
+    /// The node is first marked as removed and keeps splitting space. Once removed nodes
+    /// outnumber live ones, the tree is rebuilt balanced over the live nodes
+    /// ([`KdTree::rebalance`]), so memory and query cost track the live node count.
     fn remove(&mut self, id: usize) -> bool {
-        let Some(node) = self.nodes.iter_mut().find(|n| n.id == id && !n.removed) else {
+        let Some(index) = self.by_id.remove(&id) else {
             return false;
         };
 
-        node.removed = true;
+        self.nodes[index].removed = true;
         self.live -= 1;
+
+        if self.needs_rebuild() {
+            self.rebalance();
+        }
 
         true
     }
@@ -260,7 +449,7 @@ impl<const N: usize> super::RemovableNeighbors<Euclidean<N>> for KdTree<N> {
 mod tests {
     use super::*;
     use crate::{LinearScan, RemovableNeighbors, Sampler, UniformBox};
-    use rand_core::SeedableRng;
+    use rand_core::{Rng, SeedableRng};
 
     /// Fills a [`KdTree`] and a [`LinearScan`] with the same points, including duplicates.
     fn twins(count: usize, seed: u64) -> (KdTree<3>, LinearScan<[f64; 3]>) {
@@ -281,11 +470,9 @@ mod tests {
 
     #[test]
     fn matches_linear_scan_exactly() {
-        let space = Euclidean::<3>;
         let (kd, linear) = twins(300, 1);
         let mut sampler = UniformBox::new([-1.0; 3], [5.0; 3]);
         let mut rng = rand_pcg::Pcg64Mcg::seed_from_u64(2);
-        let (mut a, mut b) = (Vec::new(), Vec::new());
 
         for i in 0..500 {
             let mut query = sampler.sample(&mut rng);
@@ -293,11 +480,100 @@ mod tests {
                 query = query.map(libm::round);
             }
 
-            assert_eq!(kd.nearest(&space, &query), linear.nearest(&space, &query));
-            kd.within_radius(&space, &query, 1.5, &mut a);
-            linear.within_radius(&space, &query, 1.5, &mut b);
-            assert_eq!(a, b);
+            assert_queries_agree(&kd, &linear, &query, i % 40);
         }
+    }
+
+    /// Asserts that `kd` and `linear` give identical answers to every query type at `query`.
+    fn assert_queries_agree(
+        kd: &KdTree<3>,
+        linear: &LinearScan<[f64; 3]>,
+        query: &[f64; 3],
+        k: usize,
+    ) {
+        let space = Euclidean::<3>;
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+
+        assert_eq!(kd.nearest(&space, query), linear.nearest(&space, query));
+        kd.within_radius(&space, query, 1.5, &mut a);
+        linear.within_radius(&space, query, 1.5, &mut b);
+        assert_eq!(a, b);
+        kd.k_nearest(&space, query, k, &mut a);
+        linear.k_nearest(&space, query, k, &mut b);
+        assert_eq!(a, b, "k = {k}");
+        assert_eq!(
+            NearestNeighbors::<Euclidean<3>>::len(kd),
+            NearestNeighbors::<Euclidean<3>>::len(linear)
+        );
+    }
+
+    #[test]
+    fn random_inserts_and_removals_across_rebuilds_match_linear_scan() {
+        let mut sampler = UniformBox::new([0.0; 3], [4.0; 3]);
+        let mut rng = rand_pcg::Pcg64Mcg::seed_from_u64(9);
+        let mut kd = KdTree::default();
+        let mut linear = LinearScan::default();
+        let mut stored = Vec::new();
+        let mut next_id = 0;
+
+        for step in 0..3000 {
+            let roll = rng.next_u64() % 10;
+
+            if roll < 4 && !stored.is_empty() {
+                let pick = usize::try_from(rng.next_u64() % 1_000_000).expect("small");
+                let id = stored.swap_remove(pick % stored.len());
+                assert!(kd.remove(id));
+                assert!(RemovableNeighbors::<Euclidean<3>>::remove(&mut linear, id));
+            } else if roll < 5 && next_id > 0 && !stored.contains(&(next_id - 1)) {
+                // Re-inserting a removed id makes it the newest node in both structures.
+                let state = sampler.sample(&mut rng).map(libm::floor);
+                kd.insert(next_id - 1, state);
+                NearestNeighbors::<Euclidean<3>>::insert(&mut linear, next_id - 1, state);
+                stored.push(next_id - 1);
+            } else {
+                let state = sampler.sample(&mut rng).map(libm::floor);
+                kd.insert(next_id, state);
+                NearestNeighbors::<Euclidean<3>>::insert(&mut linear, next_id, state);
+                stored.push(next_id);
+                next_id += 1;
+            }
+
+            let query = sampler.sample(&mut rng).map(libm::round);
+            assert_queries_agree(&kd, &linear, &query, step % 25);
+        }
+
+        assert!(kd.nodes.len() < next_id, "rebuilds dropped removed nodes");
+    }
+
+    #[test]
+    fn rebalance_bounds_the_depth_of_sorted_insertions() {
+        let mut kd = KdTree::<2>::default();
+        for id in 0..1024_u32 {
+            kd.insert(
+                usize::try_from(id).expect("small"),
+                [f64::from(id), f64::from(id * 37 % 1024)],
+            );
+        }
+
+        assert!(depth(&kd) > 50, "sorted insertion degrades the tree");
+        kd.rebalance();
+        assert!(depth(&kd) <= 11, "depth {}", depth(&kd));
+        assert_eq!(kd.nearest(&Euclidean::<2>, &[512.2, 511.0]), Some(512));
+    }
+
+    /// The number of nodes on the longest root-to-leaf path.
+    fn depth<const N: usize>(kd: &KdTree<N>) -> usize {
+        let mut deepest = 0;
+        let mut stack: Vec<(usize, usize)> = kd.root.map(|root| (root, 1)).into_iter().collect();
+
+        while let Some((index, level)) = stack.pop() {
+            deepest = deepest.max(level);
+            let node = &kd.nodes[index];
+            stack.extend(node.left.map(|child| (child, level + 1)));
+            stack.extend(node.right.map(|child| (child, level + 1)));
+        }
+
+        deepest
     }
 
     #[test]
