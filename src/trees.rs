@@ -17,6 +17,7 @@ mod growth;
 mod rrt;
 mod rrt_connect;
 mod rrt_star;
+mod targets;
 mod tree;
 
 use core::fmt;

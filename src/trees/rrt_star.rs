@@ -4,11 +4,11 @@ use alloc::vec::Vec;
 
 use rand_core::Rng;
 
-use super::{Error, growth::Growth};
+use super::{Error, growth::Growth, targets::draw_target};
 use crate::{
     LinearScan, NearestNeighbors, Path, Problem, Sampler, StateSpace, Steering, ValidityChecker,
     radius::{
-        count_to_f64, dimension_f64, k_constant_lower_bound, k_nearest_count, unit_ball_volume,
+        dimension_f64, k_constant_lower_bound, k_nearest_count, shrinking_radius, unit_ball_volume,
     },
 };
 
@@ -76,11 +76,15 @@ impl RrtStarConfig {
     }
 
     /// The smallest k-nearest constant for which RRT*-k is asymptotically optimal (Karaman and
-    /// Frazzoli 2011): `e (1 + 1/d)`. Unlike the radius bound it does not depend on the free
-    /// volume.
+    /// Frazzoli 2011, Theorem 39): `2^(d + 1) e (1 + 1/d)`. Unlike the radius bound it does not
+    /// depend on the free volume.
+    ///
+    /// This is `2^(d + 1)` times the k-nearest PRM* and RRG bound `e (1 + 1/d)` (Theorems 35 and
+    /// 37), which OMPL uses for RRT* too and which works well in practice; the theorem only
+    /// guarantees the larger one.
     #[must_use]
     pub fn k_constant_lower_bound(dimension: usize) -> f64 {
-        k_constant_lower_bound(dimension)
+        libm::pow(2.0, dimension_f64(dimension) + 1.0) * k_constant_lower_bound(dimension)
     }
 
     /// This config with [`RrtStarConfig::informed`] switched on.
@@ -89,6 +93,50 @@ impl RrtStarConfig {
         Self {
             informed: true,
             ..self
+        }
+    }
+
+    /// Checks `gamma` (or the k-nearest constant) and `max_radius`; the goal bias is checked by
+    /// the tree.
+    pub(super) fn validate(&self) -> Result<(), Error> {
+        let constant = self.k_nearest.unwrap_or(self.gamma);
+        if !(constant.is_finite() && constant > 0.0) {
+            return Err(Error::InvalidGamma);
+        }
+
+        if self.max_radius.is_nan() || self.max_radius <= 0.0 {
+            return Err(Error::InvalidMaxRadius);
+        }
+
+        Ok(())
+    }
+
+    /// Replaces `out` with the neighbors of a new node at `state` in a graph that will have `n`
+    /// nodes: within `min(gamma (ln n / n)^(1/d), max_radius)`, or the `ceil(k ln n)` nearest
+    /// within `max_radius`. `state_of` looks up stored states by id.
+    pub(super) fn neighbors<'a, Sp, N>(
+        &self,
+        space: &Sp,
+        nn: &N,
+        state: &Sp::State,
+        n: usize,
+        state_of: impl Fn(usize) -> &'a Sp::State,
+        out: &mut Vec<usize>,
+    ) where
+        Sp: StateSpace,
+        Sp::State: 'a,
+        N: NearestNeighbors<Sp>,
+    {
+        let Some(k_constant) = self.k_nearest else {
+            let radius = shrinking_radius(self.gamma, n, dimension_f64(space.dimension()));
+            nn.within_radius(space, state, radius.min(self.max_radius), out);
+            return;
+        };
+
+        nn.k_nearest(space, state, k_nearest_count(k_constant, n), out);
+
+        if self.max_radius.is_finite() {
+            out.retain(|&id| space.distance(state_of(id), state) <= self.max_radius);
         }
     }
 
@@ -118,14 +166,8 @@ impl RrtStarConfig {
 pub struct RrtStar<Sp: StateSpace, Sa, C, St, N = LinearScan<<Sp as StateSpace>::State>> {
     /// The tree and problem.
     growth: Growth<Sp, Sa, C, St, N>,
-    /// The connection radius constant; positive and finite.
-    gamma: f64,
-    /// The RRT*-k constant, if the neighborhood is k-nearest; positive and finite.
-    k_nearest: Option<f64>,
-    /// Upper bound on the connection radius; positive, may be infinite.
-    max_radius: f64,
-    /// Whether to reject samples that cannot improve the current solution.
-    informed: bool,
+    /// The validated settings.
+    config: RrtStarConfig,
     /// Reused buffer for neighbor queries, to avoid an allocation per iteration.
     near: Vec<usize>,
 }
@@ -173,21 +215,11 @@ where
         config: RrtStarConfig,
         nn: N,
     ) -> Result<Self, Error> {
-        let constant = config.k_nearest.unwrap_or(config.gamma);
-        if !(constant.is_finite() && constant > 0.0) {
-            return Err(Error::InvalidGamma);
-        }
-
-        if config.max_radius.is_nan() || config.max_radius <= 0.0 {
-            return Err(Error::InvalidMaxRadius);
-        }
+        config.validate()?;
 
         Ok(Self {
             growth: Growth::new(problem, config.goal_bias, nn)?,
-            gamma: config.gamma,
-            k_nearest: config.k_nearest,
-            max_radius: config.max_radius,
-            informed: config.informed,
+            config,
             near: Vec::new(),
         })
     }
@@ -213,59 +245,16 @@ where
 
     /// Draws the next growth target: a goal-biased sample, restricted to the informed set when
     /// informed sampling is on and a solution exists.
-    ///
-    /// The informed set is sampled directly through [`Sampler::sample_informed`] when the
-    /// sampler supports it, and by rejection otherwise. A sampler that declines without drawing
-    /// leaves the random stream exactly as pure rejection sampling would use it.
     fn draw_target<R: Rng + ?Sized>(&mut self, rng: &mut R) -> Sp::State {
-        let Some(bound) = self.informed_bound() else {
-            return self.growth.draw(rng);
-        };
+        let bound = self.informed_bound();
 
-        if self.growth.roll_goal_bias(rng) {
-            return self.growth.problem.goal.center().clone();
-        }
-
-        let problem = &mut self.growth.problem;
-        let direct = problem.sampler.sample_informed(
-            &problem.space,
-            rng,
-            &problem.start,
-            problem.goal.center(),
-            bound,
-        );
-        if let Some(state) = direct {
-            return state;
-        }
-
-        let first = problem.sampler.sample(rng);
-
-        self.reject_until_informed(first, bound, rng)
-    }
-
-    /// Rejection sampling: replaces `sample` by fresh goal-biased draws until one lies in the
-    /// informed set below `bound`, at most [`INFORMED_ATTEMPTS`] samples in total.
-    fn reject_until_informed<R: Rng + ?Sized>(
-        &mut self,
-        mut sample: Sp::State,
-        bound: f64,
-        rng: &mut R,
-    ) -> Sp::State {
-        for _ in 1..INFORMED_ATTEMPTS {
-            if self.informed_cost(&sample) < bound {
-                break;
-            }
-
-            sample = self.growth.draw(rng);
-        }
-
-        sample
+        draw_target(&mut self.growth.problem, self.growth.goal_bias, bound, rng)
     }
 
     /// The informed-set bound `c_best + tolerance`, or `None` when informed sampling is off or
     /// no solution exists yet.
     fn informed_bound(&self) -> Option<f64> {
-        if !self.informed {
+        if !self.config.informed {
             return None;
         }
 
@@ -274,42 +263,19 @@ where
         Some(best + self.growth.problem.goal.tolerance())
     }
 
-    /// The informed heuristic `d(start, x) + d(x, goal center)`, a lower bound on the cost of a
-    /// solution through `x` plus the goal tolerance.
-    fn informed_cost(&self, state: &Sp::State) -> f64 {
-        let problem = &self.growth.problem;
-
-        problem.space.distance(&problem.start, state)
-            + problem.space.distance(state, problem.goal.center())
-    }
-
     /// Replaces `near` with the candidate parents and rewiring targets of the new node at
-    /// `state`: the radius ball, or the k nearest nodes within `max_radius`.
+    /// `state`.
     fn neighbors(&self, state: &Sp::State, near: &mut Vec<usize>) {
-        let space = &self.growth.problem.space;
-        let nn = &self.growth.nn;
+        let tree = &self.growth.tree;
 
-        let Some(k_constant) = self.k_nearest else {
-            nn.within_radius(space, state, self.radius(), near);
-            return;
-        };
-
-        let k = k_nearest_count(k_constant, self.growth.tree.len() + 1);
-        nn.k_nearest(space, state, k, near);
-
-        if self.max_radius.is_finite() {
-            let tree = &self.growth.tree;
-            near.retain(|&id| space.distance(tree.state(id), state) <= self.max_radius);
-        }
-    }
-
-    /// The connection radius for the next node: `min(gamma * (ln n / n)^(1/d), max_radius)`,
-    /// with `n` counting the new node.
-    fn radius(&self) -> f64 {
-        let n = count_to_f64(self.growth.tree.len() + 1);
-        let d = count_to_f64(self.growth.problem.space.dimension().max(1));
-
-        (self.gamma * libm::pow(libm::log(n) / n, 1.0 / d)).min(self.max_radius)
+        self.config.neighbors(
+            &self.growth.problem.space,
+            &self.growth.nn,
+            state,
+            tree.len() + 1,
+            |id| tree.state(id),
+            near,
+        );
     }
 
     /// The cheapest parent for `new` among `nearest` and `near`, with its resulting cost.

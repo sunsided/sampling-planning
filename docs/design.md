@@ -184,7 +184,8 @@ which matters for reachable-set edge checks. Asymptotic optimality needs
 `gamma > (2 (1 + 1/d))^(1/d) (mu(X_free) / zeta_d)^(1/d)`, where `zeta_d` is
 the volume of the unit `d`-ball; the docs on `RrtStarConfig` spell this out.
 RRT*-k (`RrtStarConfig::k_nearest`) uses the `ceil(k ln n)` nearest nodes
-instead, with `k > e (1 + 1/d)`, and still drops neighbors beyond `eta`.
+instead, with `k > 2^(d+1) e (1 + 1/d)` (Theorem 39; OMPL uses the RRG bound
+`e (1 + 1/d)`), and still drops neighbors beyond `eta`.
 When a node is rewired, the costs of all its descendants are recomputed, so
 the cost of every node, and the best solution cost, never increases.
 
@@ -228,7 +229,7 @@ pairs. Edges are direct motions along `interpolate`.
   `gamma > 2 (1 + 1/d)^(1/d) (mu / zeta_d)^(1/d)` (Karaman and Frazzoli 2011,
   Theorem 34). The k-nearest variants connect a new node to its `k` nearest
   older nodes (fixed `k`, or `ceil(k ln n)` with `k > e (1 + 1/d)` for
-  k-nearest PRM*). Queries attach the start and the goal center with the
+  k-nearest PRM*, Theorem 35). Queries attach the start and the goal center with the
   current rule and run Dijkstra (ties by `total_cmp`, then node id); the
   direct start-to-center motion is tried when the center is within the
   start's reach (the radius, or the distance of its `k`-th neighbor).

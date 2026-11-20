@@ -1,37 +1,37 @@
-//! Deterministic shortest paths over roadmap graphs.
+//! Deterministic shortest paths and priority-queue entries, shared by the graph-based planners.
 
 use alloc::{collections::BinaryHeap, vec::Vec};
 use core::cmp::Ordering;
 
 /// An outgoing arc found while expanding a node.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) struct Arc {
+pub(crate) struct Arc {
     /// The node the arc leads to.
-    pub(super) to: usize,
+    pub(crate) to: usize,
     /// The arc cost; non-negative.
-    pub(super) cost: f64,
+    pub(crate) cost: f64,
     /// The roadmap edge behind the arc, or `None` for query-local arcs.
-    pub(super) edge: Option<usize>,
+    pub(crate) edge: Option<usize>,
 }
 
 /// The result of [`shortest_path`].
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct Route {
+pub(crate) struct Route {
     /// The nodes from the source to the goal node, both included.
-    pub(super) nodes: Vec<usize>,
+    pub(crate) nodes: Vec<usize>,
     /// The roadmap edges along the route, in travel order; `None` for query-local arcs.
-    pub(super) edges: Vec<Option<usize>>,
+    pub(crate) edges: Vec<Option<usize>>,
     /// The total cost.
-    pub(super) cost: f64,
+    pub(crate) cost: f64,
 }
 
 /// A priority-queue entry ordered by cost, then by node id, both ascending.
 #[derive(Debug, Clone, Copy)]
-pub(super) struct Entry {
+pub(crate) struct Entry {
     /// The tentative cost of `node`.
-    pub(super) cost: f64,
+    pub(crate) cost: f64,
     /// The node.
-    pub(super) node: usize,
+    pub(crate) node: usize,
 }
 
 impl PartialEq for Entry {
@@ -63,7 +63,7 @@ impl Ord for Entry {
 ///
 /// `arcs(node, out)` replaces `out` with the outgoing arcs of `node`. Ties between equally
 /// cheap nodes are settled lowest id first, so the result is deterministic.
-pub(super) fn shortest_path<A>(
+pub(crate) fn shortest_path<A>(
     node_count: usize,
     source: usize,
     is_goal: impl Fn(usize) -> bool,

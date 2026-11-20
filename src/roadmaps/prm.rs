@@ -4,10 +4,8 @@ use alloc::vec::Vec;
 
 use rand_core::Rng;
 
-use super::{
-    Error,
-    graph::{Arc, Route, shortest_path},
-};
+use super::Error;
+use crate::graph::{Arc, Route, shortest_path};
 use crate::radius::{
     dimension_f64, k_constant_lower_bound, k_nearest_count, shrinking_radius, unit_ball_volume,
 };
@@ -105,7 +103,7 @@ impl PrmConfig {
     }
 
     /// The smallest k-nearest constant for which k-nearest PRM* is asymptotically optimal
-    /// (Karaman and Frazzoli 2011): `e (1 + 1/d)`.
+    /// (Karaman and Frazzoli 2011, Theorem 35): `e (1 + 1/d)`.
     #[must_use]
     pub fn k_constant_lower_bound(dimension: usize) -> f64 {
         k_constant_lower_bound(dimension)

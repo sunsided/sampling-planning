@@ -30,8 +30,8 @@ pub(crate) fn shrinking_radius(gamma: f64, n: usize, d: f64) -> f64 {
     gamma * libm::pow(libm::log(n) / n, 1.0 / d)
 }
 
-/// The smallest k-nearest constant for which k-nearest PRM* and RRT* are asymptotically
-/// optimal (Karaman and Frazzoli 2011): `e (1 + 1/d)`.
+/// The smallest k-nearest constant for which k-nearest PRM* and RRG are asymptotically optimal
+/// (Karaman and Frazzoli 2011, Theorems 35 and 37): `e (1 + 1/d)`.
 pub(crate) fn k_constant_lower_bound(dimension: usize) -> f64 {
     core::f64::consts::E * (1.0 + 1.0 / dimension_f64(dimension))
 }

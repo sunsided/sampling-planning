@@ -4,10 +4,8 @@ use alloc::vec::Vec;
 
 use rand_core::Rng;
 
-use super::{Error, tree::Tree};
-use crate::{
-    NearestNeighbors, Path, Problem, Sampler, StateSpace, Steering, ValidityChecker, unit_f64,
-};
+use super::{Error, targets::draw_target, tree::Tree};
+use crate::{NearestNeighbors, Path, Problem, Sampler, StateSpace, Steering, ValidityChecker};
 
 /// A growing tree over a [`Problem`], with its nearest-neighbor index and goal nodes.
 #[derive(Clone)]
@@ -21,7 +19,7 @@ pub(super) struct Growth<Sp: StateSpace, Sa, C, St, N> {
     /// Ids of tree nodes inside the goal region, in insertion order.
     goal_nodes: Vec<usize>,
     /// Probability in `[0, 1]` of sampling the goal center instead of the sampler.
-    goal_bias: f64,
+    pub(super) goal_bias: f64,
 }
 
 impl<Sp, Sa, C, St, N> Growth<Sp, Sa, C, St, N>
@@ -93,16 +91,7 @@ where
 
     /// Draws the goal center with probability `goal_bias`, otherwise a sampler state.
     pub(super) fn draw<R: Rng + ?Sized>(&mut self, rng: &mut R) -> Sp::State {
-        if self.roll_goal_bias(rng) {
-            self.problem.goal.center().clone()
-        } else {
-            self.problem.sampler.sample(rng)
-        }
-    }
-
-    /// Draws one uniform number and returns whether it falls under the goal bias.
-    pub(super) fn roll_goal_bias<R: Rng + ?Sized>(&self, rng: &mut R) -> bool {
-        unit_f64(rng) < self.goal_bias
+        draw_target(&mut self.problem, self.goal_bias, None, rng)
     }
 
     /// Whether the motion from node `from` to `to` checks as valid. Unknown counts as invalid.

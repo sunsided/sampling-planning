@@ -102,7 +102,7 @@ fn kd_tree_gives_the_same_rrt_star_run_as_linear_scan() {
 
 /// An RRT*-k config with a constant safely above the bound and the steering step as cap.
 fn star_k_config() -> RrtStarConfig {
-    RrtStarConfig::k_nearest(2.0 * RrtStarConfig::k_constant_lower_bound(2), 1.0)
+    RrtStarConfig::k_nearest(1.1 * RrtStarConfig::k_constant_lower_bound(2), 1.0)
 }
 
 #[test]

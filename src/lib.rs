@@ -91,6 +91,7 @@
 extern crate alloc;
 
 mod goal;
+mod graph;
 pub mod kinodynamic;
 mod nearest;
 mod problem;

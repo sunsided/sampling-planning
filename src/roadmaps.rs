@@ -15,7 +15,6 @@
 //! ```
 
 mod fmt_star;
-mod graph;
 mod prm;
 
 use core::fmt;

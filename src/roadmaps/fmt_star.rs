@@ -4,7 +4,8 @@ use alloc::{collections::BinaryHeap, vec::Vec};
 
 use rand_core::Rng;
 
-use super::{Error, graph::Entry};
+use super::Error;
+use crate::graph::Entry;
 use crate::radius::{dimension_f64, shrinking_radius, unit_ball_volume};
 use crate::{GoalRegion, LinearScan, NearestNeighbors, Path, Sampler, StateSpace, ValidityChecker};
 
