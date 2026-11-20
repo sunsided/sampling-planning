@@ -175,7 +175,10 @@ where
         let target = self.problem.sampler.sample(rng);
         if let Some(new) = self.extend(side, &target) {
             self.check_direct_goal(side, new);
-            self.connect(side.other(), new, side);
+
+            if self.solution.is_none() {
+                self.connect(side.other(), new, side);
+            }
         }
 
         self.solution.is_some()
@@ -393,5 +396,25 @@ mod tests {
         }
 
         assert!((path.cost - 8.0).abs() < 1e-9, "{}", path.cost);
+    }
+
+    #[test]
+    fn one_way_gate_blocks_the_reverse_direction() {
+        // A goal tree that checked parent to child would cross the gate leftward from the goal
+        // and return a path that is invalid in travel direction.
+        let problem = Problem {
+            space: Euclidean::<1>,
+            sampler: UniformBox::new([0.0], [10.0]),
+            checker: OneWay,
+            steering: StraightLine::new(0.7),
+            start: [9.0],
+            goal: GoalRegion::new([1.0], 0.1),
+        };
+        let mut planner = RrtConnect::new(problem).expect("valid");
+
+        assert_eq!(
+            planner.solve(3000, &mut rand_pcg::Pcg64Mcg::seed_from_u64(4)),
+            None
+        );
     }
 }
