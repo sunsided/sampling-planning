@@ -1,5 +1,6 @@
 //! Integration tests for the tree planners on a 2D world with obstacles.
 
+mod kinodynamic;
 mod roadmaps;
 mod world;
 
