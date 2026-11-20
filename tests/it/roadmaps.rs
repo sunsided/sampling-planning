@@ -4,7 +4,9 @@ use rand_core::SeedableRng;
 use rand_pcg::Pcg64Mcg;
 use sampling_planning::{
     Euclidean, GoalRegion, KdTree, Path, UniformBox, Validity, ValidityChecker,
-    roadmaps::{Connection, FmtStar, FmtStarConfig, Prm, PrmConfig},
+    roadmaps::{
+        BfmtStar, BfmtStarConfig, Connection, FmtStar, FmtStarConfig, Prm, PrmConfig, Termination,
+    },
 };
 
 use crate::SLALOM_OPTIMUM;
@@ -104,6 +106,11 @@ fn fixed_radius_prm_with_kd_tree_matches_linear_scan() {
 
 /// FMT* on the slalom with `samples` samples and a fixed seed.
 fn fmt_slalom(samples: usize, seed: u64) -> Option<Path<[f64; 2]>> {
+    fmt_slalom_to(&slalom().goal, samples, seed)
+}
+
+/// FMT* on the slalom toward `goal`.
+fn fmt_slalom_to(goal: &GoalRegion<[f64; 2]>, samples: usize, seed: u64) -> Option<Path<[f64; 2]>> {
     let world = slalom();
     let config = FmtStarConfig {
         gamma: 1.5 * FmtStarConfig::gamma_lower_bound(2, 100.0),
@@ -119,7 +126,7 @@ fn fmt_slalom(samples: usize, seed: u64) -> Option<Path<[f64; 2]>> {
 
     fmt.plan(
         &world.start,
-        &world.goal,
+        goal,
         samples,
         &mut Pcg64Mcg::seed_from_u64(seed),
     )
@@ -225,5 +232,164 @@ fn zero_neighbors_are_rejected() {
     assert_eq!(
         Prm::new(world.space, world.sampler, world.checker, config).err(),
         Some(sampling_planning::roadmaps::Error::InvalidRadius)
+    );
+}
+
+/// The optimal slalom cost to the goal center itself, rounded down: [`SLALOM_OPTIMUM`] plus the
+/// goal tolerance. BFMT*'s goal tree ends every path through it at the center.
+const SLALOM_CENTER_OPTIMUM: f64 = 19.155;
+
+/// BFMT* on the slalom with `samples` samples, a fixed seed and the given termination.
+fn bfmt_slalom(samples: usize, seed: u64, termination: Termination) -> Option<Path<[f64; 2]>> {
+    bfmt_slalom_to(&slalom().goal, samples, seed, termination)
+}
+
+/// BFMT* on the slalom toward `goal`.
+fn bfmt_slalom_to(
+    goal: &GoalRegion<[f64; 2]>,
+    samples: usize,
+    seed: u64,
+    termination: Termination,
+) -> Option<Path<[f64; 2]>> {
+    let world = slalom();
+    let config = BfmtStarConfig {
+        gamma: BfmtStarConfig::gamma_lower_bound(2, 100.0),
+        termination,
+    };
+    let mut bfmt = BfmtStar::with_nearest_neighbors(
+        world.space,
+        world.sampler,
+        world.checker,
+        config,
+        KdTree::default(),
+    )
+    .expect("valid");
+
+    bfmt.plan(
+        &world.start,
+        goal,
+        samples,
+        &mut Pcg64Mcg::seed_from_u64(seed),
+    )
+    .expect("valid endpoints")
+}
+
+#[test]
+fn bfmt_star_finds_valid_paths_and_improves_with_larger_batches() {
+    for seed in 0..3 {
+        let small = bfmt_slalom(300, seed, Termination::Optimal).expect("solved");
+        let large = bfmt_slalom(5000, seed, Termination::Optimal).expect("solved");
+
+        for path in [&small, &large] {
+            assert_solves_with(&slalom(), path, f64::INFINITY);
+            assert!(path.cost >= SLALOM_OPTIMUM);
+        }
+
+        assert!(
+            large.cost < small.cost,
+            "seed {seed}: {} vs {}",
+            large.cost,
+            small.cost
+        );
+        assert!(
+            large.cost < SLALOM_CENTER_OPTIMUM * 1.05,
+            "seed {seed}: {}",
+            large.cost
+        );
+        assert_eq!(Some(large), bfmt_slalom(5000, seed, Termination::Optimal));
+    }
+}
+
+#[test]
+fn bfmt_star_matches_fmt_star_and_first_meetings_cost_more() {
+    for seed in 0..3 {
+        // A point goal, so that both planners have to end at the goal center.
+        let center = GoalRegion::new(*slalom().goal.center(), 0.0);
+        let optimal = bfmt_slalom_to(&center, 2000, seed, Termination::Optimal);
+        let first = bfmt_slalom_to(&center, 2000, seed, Termination::FirstMeeting);
+        let fmt = fmt_slalom_to(&center, 2000, seed).expect("solved");
+        let (optimal, first) = (optimal.expect("solved"), first.expect("solved"));
+
+        assert_solves_with(&slalom(), &first, f64::INFINITY);
+        assert!(first.cost >= optimal.cost - 1e-9, "seed {seed}");
+        assert!(
+            (optimal.cost - fmt.cost).abs() < 0.02 * fmt.cost,
+            "seed {seed}: BFMT* {} vs FMT* {}",
+            optimal.cost,
+            fmt.cost
+        );
+    }
+}
+
+/// A one-way gate at `x = 5` on the line: motions may cross it only while `x` increases.
+struct OneWay;
+
+impl ValidityChecker<Euclidean<1>> for OneWay {
+    fn check_state(&self, _: &[f64; 1]) -> Validity {
+        Validity::Valid
+    }
+
+    fn check_motion(&self, _: &Euclidean<1>, from: &[f64; 1], to: &[f64; 1]) -> Validity {
+        if (from[0] < 5.0) != (to[0] < 5.0) && to[0] < from[0] {
+            Validity::Invalid
+        } else {
+            Validity::Valid
+        }
+    }
+}
+
+#[test]
+fn bfmt_star_checks_goal_tree_edges_toward_the_goal() {
+    let plan = |start: f64, goal: f64| {
+        let config = BfmtStarConfig::new(BfmtStarConfig::gamma_lower_bound(1, 10.0));
+        let mut bfmt = BfmtStar::new(
+            Euclidean::<1>,
+            UniformBox::new([0.0], [10.0]),
+            OneWay,
+            config,
+        )
+        .expect("valid");
+
+        bfmt.plan(
+            &[start],
+            &GoalRegion::new([goal], 0.05),
+            500,
+            &mut Pcg64Mcg::seed_from_u64(3),
+        )
+        .expect("valid endpoints")
+    };
+
+    let rightward = plan(1.0, 9.0).expect("crossing rightward is allowed");
+    for pair in rightward.states.windows(2) {
+        assert_eq!(
+            OneWay.check_motion(&Euclidean::<1>, &pair[0], &pair[1]),
+            Validity::Valid
+        );
+    }
+
+    assert_eq!(plan(9.0, 1.0), None, "crossing leftward is not");
+}
+
+#[test]
+fn bfmt_star_rejects_an_invalid_goal_center() {
+    let world = slalom();
+    let mut bfmt = BfmtStar::new(
+        world.space,
+        world.sampler,
+        world.checker,
+        BfmtStarConfig::new(5.0),
+    )
+    .expect("valid");
+
+    assert_eq!(
+        bfmt.plan(
+            &world.start,
+            &GoalRegion::new([4.5, 1.0], 0.5),
+            100,
+            &mut Pcg64Mcg::seed_from_u64(1)
+        ),
+        Err(sampling_planning::roadmaps::Error::InvalidGoal(
+            Validity::Invalid
+        ))
     );
 }

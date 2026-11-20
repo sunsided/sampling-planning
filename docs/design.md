@@ -10,7 +10,7 @@ for continuous configuration spaces. It is not a task planner. The name
 | --- | --- |
 | `trees` | RRT, RRT*, RRT*-k, Informed RRT*, RRT#, RRT-Connect |
 | `informed` | later: BIT*, AIT*, ABIT*, EIT* |
-| `roadmaps` | PRM, PRM*, lazy PRM, FMT*; later SPARS, SPARS2, BFMT* |
+| `roadmaps` | PRM, PRM*, k-nearest PRM*, lazy PRM, FMT*, BFMT*; later SPARS, SPARS2 |
 | `kinodynamic` | SST, SST*; later KPIECE |
 
 FMT* and BFMT* build a roadmap-like sample set and march over it, so they
@@ -253,6 +253,20 @@ pairs. Edges are direct motions along `interpolate`.
   `check_both_directions` is the switch for directional checkers.
 - FMT* follows Algorithm 2 of Janson et al. 2015 with
   `gamma > 2 (1/d)^(1/d) (mu / zeta_d)^(1/d)` (Theorem 4.1 with `eta = 0`).
+- BFMT* (Starek et al. 2015, arXiv 1507.07602) shares FMT*'s batch and
+  wavefront code (`roadmaps/march.rs`): a start tree marches outward, a goal
+  tree inward from the goal center, and they swap after every expansion unless
+  the other wavefront is empty. A newly connected node held by both trees is a
+  connection; the cheapest is kept, and so is any start-tree node inside the
+  goal region. `Termination::Optimal` (default, the paper's best-path
+  criterion and OMPL's default) stops once the node just expanded was already
+  expanded by the other tree; `Termination::FirstMeeting` stops at the first
+  expansion that finds a connection (Algorithm 1 as printed). Goal-tree edges
+  are checked child to parent, so directional checkers stay sound. The radius
+  bound is the paper's `4 (1/d)^(1/d) (mu / zeta_d)^(1/d)` (Theorem 4.1);
+  OMPL uses FMT*'s factor 2. Algorithm 3 (inserting fresh samples when a
+  wavefront dies) is not implemented: a dead batch returns no path, like
+  FMT*.
 
 ### Kinodynamic planners
 
@@ -344,6 +358,9 @@ Float math (`sqrt`, `ln`, `powf`) is not in `core`. Decision: always use
   IJRR 34(7), 2015.
 - J. D. Gammell, T. D. Barfoot and S. S. Srinivasa. *Batch Informed Trees
   (BIT\*).* IJRR 39(5), 2020.
+- J. A. Starek, J. V. Gomez, E. Schmerling, L. Janson, L. Moreno and
+  M. Pavone. *An asymptotically-optimal sampling-based algorithm for
+  bi-directional motion planning.* IROS 2015. (BFMT*.)
 - Y. Li, Z. Littlefield and K. E. Bekris. *Asymptotically optimal
   sampling-based kinodynamic planning.* IJRR 35(5), 2016. (SST, SST*.)
 
@@ -357,7 +374,7 @@ Float math (`sqrt`, `ln`, `powf`) is not in `core`. Decision: always use
 3. **Informed trees:** informed sampling (direct for Euclidean boxes,
    rejection otherwise), RRT-Connect and RRT# are done; BIT*, then AIT*/EIT*
    are open.
-4. **FMT\*/BFMT\*:** FMT* is done, BFMT* is open.
+4. **FMT\*/BFMT\*:** done.
 5. **Kinodynamic:** `Propagator`, SST and SST* are done, KPIECE is open.
 6. **More spaces:** SO(2), SE(2), SE(3), compound spaces.
 

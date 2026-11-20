@@ -1,12 +1,14 @@
 //! FMT*: the fast marching tree (Janson, Schmerling, Clark and Pavone 2015).
 
-use alloc::{collections::BinaryHeap, vec::Vec};
+use alloc::vec::Vec;
 
 use rand_core::Rng;
 
-use super::Error;
-use crate::graph::Entry;
-use crate::radius::{dimension_f64, shrinking_radius, unit_ball_volume};
+use super::{
+    Error,
+    march::{Batch, Direction, Wave},
+};
+use crate::radius::{dimension_f64, unit_ball_volume};
 use crate::{GoalRegion, LinearScan, NearestNeighbors, Path, Sampler, StateSpace, ValidityChecker};
 
 /// Settings for [`FmtStar`].
@@ -34,19 +36,6 @@ impl FmtStarConfig {
 
         2.0 * libm::pow(1.0 / d, 1.0 / d) * libm::pow(free_volume / unit_ball_volume(d), 1.0 / d)
     }
-}
-
-/// Where a node stands in the march.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Status {
-    /// Not connected yet (the set `W`).
-    Unvisited,
-    /// Connected during the current expansion; joins the open set after it (`H_new`).
-    Fresh,
-    /// Connected and on the wavefront (the set `H`).
-    Open,
-    /// Expanded; never touched again.
-    Closed,
 }
 
 /// FMT*: draws a batch of samples, then marches a tree outward from the start in order of
@@ -177,7 +166,44 @@ where
 
         let states = self.draw_batch(start, goal, samples, rng);
 
-        Ok(March::new(self, states).run(goal))
+        Ok(self.march(states, goal))
+    }
+
+    /// Marches one outward wave from node `0` over `states` until the cheapest open node lies
+    /// in `goal`, and returns the path to it.
+    fn march(
+        &self,
+        states: Vec<Sp::State>,
+        goal: &GoalRegion<Sp::State>,
+    ) -> Option<Path<Sp::State>> {
+        let mut batch = Batch::new(
+            &self.space,
+            &self.checker,
+            self.config.gamma,
+            states,
+            self.nn.clone(),
+        );
+        let mut wave = Wave::new(batch.len(), 0, Direction::Outward);
+
+        while let Some(z) = wave.peek_open() {
+            if goal.contains(&self.space, &batch.states[z]) {
+                let mut states: Vec<_> = wave
+                    .branch(z)
+                    .into_iter()
+                    .map(|node| batch.states[node].clone())
+                    .collect();
+                states.reverse();
+
+                return Some(Path {
+                    states,
+                    cost: wave.cost[z],
+                });
+            }
+
+            wave.expand(&mut batch, z);
+        }
+
+        None
     }
 
     /// The start, the valid samples and, when valid, the goal center, in that order.
@@ -203,186 +229,6 @@ where
         }
 
         states
-    }
-}
-
-/// The state of one FMT* run over a fixed batch. Node `0` is the start.
-struct March<'a, Sp: StateSpace, Sa, C, N> {
-    /// The planner, for its space, checker and config.
-    planner: &'a FmtStar<Sp, Sa, C, N>,
-    /// The batch states, indexed by node id.
-    states: Vec<Sp::State>,
-    /// Index over all batch states.
-    nn: N,
-    /// The connection radius for this batch.
-    radius: f64,
-    /// Neighbors within `radius` per node, excluding the node; filled on first use.
-    near: Vec<Option<Vec<usize>>>,
-    /// Where each node stands.
-    status: Vec<Status>,
-    /// Cost-to-come of connected nodes.
-    cost: Vec<f64>,
-    /// Parent of connected nodes; `None` for the start and unconnected nodes.
-    parent: Vec<Option<usize>>,
-    /// The open set ordered by cost, then id; closed entries are skipped when popped.
-    open: BinaryHeap<Entry>,
-}
-
-impl<'a, Sp, Sa, C, N> March<'a, Sp, Sa, C, N>
-where
-    Sp: StateSpace,
-    C: ValidityChecker<Sp>,
-    N: NearestNeighbors<Sp> + Clone,
-{
-    /// Indexes the batch and puts the start on the wavefront.
-    fn new(planner: &'a FmtStar<Sp, Sa, C, N>, states: Vec<Sp::State>) -> Self {
-        let n = states.len();
-        let mut nn = planner.nn.clone();
-
-        for (id, state) in states.iter().enumerate() {
-            nn.insert(id, state.clone());
-        }
-
-        let d = dimension_f64(planner.space.dimension());
-        let mut march = Self {
-            planner,
-            radius: shrinking_radius(planner.config.gamma, n, d),
-            states,
-            nn,
-            near: alloc::vec![None; n],
-            status: alloc::vec![Status::Unvisited; n],
-            cost: alloc::vec![f64::INFINITY; n],
-            parent: alloc::vec![None; n],
-            open: BinaryHeap::new(),
-        };
-        march.status[0] = Status::Open;
-        march.cost[0] = 0.0;
-        march.open.push(Entry { cost: 0.0, node: 0 });
-
-        march
-    }
-
-    /// Expands the cheapest open node until it lies in `goal` or the open set is empty.
-    fn run(mut self, goal: &GoalRegion<Sp::State>) -> Option<Path<Sp::State>> {
-        while let Some(Entry { node: z, .. }) = self.open.pop() {
-            if self.status[z] == Status::Closed {
-                continue;
-            }
-
-            if goal.contains(&self.planner.space, &self.states[z]) {
-                return Some(self.path_to(z));
-            }
-
-            self.expand(z);
-        }
-
-        None
-    }
-
-    /// Connects each unvisited neighbor of `z` to its cheapest open neighbor, if that motion
-    /// is valid, then moves the new nodes to the open set and closes `z`.
-    fn expand(&mut self, z: usize) {
-        let mut fresh = Vec::new();
-        self.ensure_neighbors(z);
-        // Taken out for the loop; only neighbor lists of other nodes are needed meanwhile.
-        let near_z = self.near[z].take().unwrap_or_default();
-
-        for &x in &near_z {
-            if self.status[x] != Status::Unvisited {
-                continue;
-            }
-
-            let Some((y, cost)) = self.cheapest_open_neighbor(x) else {
-                continue;
-            };
-
-            // Only the locally best parent is checked; a failure leaves `x` for later waves.
-            if self.is_motion_valid(y, x) {
-                self.status[x] = Status::Fresh;
-                self.cost[x] = cost;
-                self.parent[x] = Some(y);
-                fresh.push(x);
-            }
-        }
-
-        self.near[z] = Some(near_z);
-
-        for x in fresh {
-            self.status[x] = Status::Open;
-            self.open.push(Entry {
-                cost: self.cost[x],
-                node: x,
-            });
-        }
-
-        self.status[z] = Status::Closed;
-    }
-
-    /// The open neighbor `y` of `x` minimizing `cost(y) + d(y, x)`, lowest id on ties, with that
-    /// cost.
-    fn cheapest_open_neighbor(&mut self, x: usize) -> Option<(usize, f64)> {
-        let mut best: Option<(usize, f64)> = None;
-        self.ensure_neighbors(x);
-
-        for &y in self.near[x].as_deref().unwrap_or_default() {
-            if self.status[y] != Status::Open {
-                continue;
-            }
-
-            let cost = self.cost[y]
-                + self
-                    .planner
-                    .space
-                    .distance(&self.states[y], &self.states[x]);
-            if best.is_none_or(|(_, best_cost)| cost < best_cost) {
-                best = Some((y, cost));
-            }
-        }
-
-        best
-    }
-
-    /// Computes the neighbors of `node` within the radius, in id order, unless cached.
-    fn ensure_neighbors(&mut self, node: usize) {
-        if self.near[node].is_some() {
-            return;
-        }
-
-        let mut near = Vec::new();
-        self.nn.within_radius(
-            &self.planner.space,
-            &self.states[node],
-            self.radius,
-            &mut near,
-        );
-        near.retain(|&other| other != node);
-        self.near[node] = Some(near);
-    }
-
-    /// Whether the motion from node `from` to node `to` checks as valid.
-    fn is_motion_valid(&self, from: usize, to: usize) -> bool {
-        self.planner
-            .checker
-            .check_motion(&self.planner.space, &self.states[from], &self.states[to])
-            .is_valid()
-    }
-
-    /// The path from the start to the connected node `id`.
-    fn path_to(&self, id: usize) -> Path<Sp::State> {
-        let mut states = Vec::new();
-        let mut current = Some(id);
-
-        while let Some(node) = current {
-            states.push(self.states[node].clone());
-            current = self.parent[node];
-        }
-
-        states.reverse();
-
-        Path {
-            states,
-            cost: self.cost[id],
-        }
     }
 }
 
