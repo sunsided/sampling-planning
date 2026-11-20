@@ -1,4 +1,4 @@
-//! Roadmap and batch planners: PRM, PRM*, lazy PRM, SPARS2, FMT* and BFMT*.
+//! Roadmap and batch planners: PRM, PRM*, lazy PRM, SPARS, SPARS2, FMT* and BFMT*.
 //!
 //! These planners do not grow a tree from the start. [`Prm`] builds a graph once and answers
 //! many queries on it; FMT* marches a tree through a batch of samples drawn up front, BFMT*
@@ -19,6 +19,7 @@ mod bfmt_star;
 mod fmt_star;
 mod march;
 mod prm;
+mod spars;
 mod spars2;
 mod sparse;
 
@@ -27,6 +28,7 @@ use core::fmt;
 pub use bfmt_star::{BfmtStar, BfmtStarConfig, Termination};
 pub use fmt_star::{FmtStar, FmtStarConfig};
 pub use prm::{Connection, Prm, PrmConfig};
+pub use spars::{Spars, SparsConfig};
 pub use spars2::{NEAR_ATTEMPTS, Spars2, Spars2Config};
 pub use sparse::GuardKind;
 

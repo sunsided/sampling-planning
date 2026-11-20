@@ -10,7 +10,7 @@ for continuous configuration spaces. It is not a task planner. The name
 | --- | --- |
 | `trees` | RRT, RRT*, RRT*-k, Informed RRT*, RRT#, RRT-Connect |
 | `informed` | BIT*; later AIT*, ABIT*, EIT* |
-| `roadmaps` | PRM, PRM*, k-nearest PRM*, lazy PRM, SPARS2, FMT*, BFMT*; later SPARS |
+| `roadmaps` | PRM, PRM*, k-nearest PRM*, lazy PRM, SPARS, SPARS2, FMT*, BFMT* |
 | `kinodynamic` | SST, SST*, KPIECE |
 
 FMT* and BFMT* build a roadmap-like sample set and march over it, so they
@@ -328,13 +328,57 @@ start and goal directly, since it needs no steering.
 is tested for coverage, connectivity, interface and quality, in that order;
 construction is complete after `max_failures` consecutive samples that change
 nothing. Guards, undirected edges, union-find components and the multi-query
-Dijkstra live in `roadmaps/sparse.rs` for a later SPARS. Deviations from
+Dijkstra live in `roadmaps/sparse.rs`, shared with SPARS. Deviations from
 OMPL, all documented in rustdoc: the quality test uses OMPL's midpoint
 estimate but adds the interface-point path without smoothing; any change
 resets the failure counter; near samples follow the geodesic toward a uniform
 sample with a bounded number of attempts. Tests check coverage (98 % of
 random valid states see a guard), the stretch bound against a dense PRM*
 (`t c* + 4 Delta`), sparsity and that the quality criterion fires.
+
+`Spars` ports OMPL's `SPARS` (Dobson and Bekris 2014), which keeps a dense
+k-nearest PRM* graph `D` (`k = ceil(e (1 + 1/d) ln n)`) next to the sparse
+one. Each dense node has a representative, the closest visible guard within
+`sparse_delta` (ties by id); each guard keeps, per other guard, the list of
+its dense nodes with a dense neighbor closer than `dense_delta` represented by
+that guard (interface lists), and a non-interface list. Every new guard
+re-assigns the dense nodes within `sparse_delta + dense_delta`, as OMPL's
+`updateRepresentatives`. The per-sample criteria (coverage, connectivity,
+interface with the dense vertex as the new guard, then the interface
+neighborhood and `checkAddPath`), the loop nesting of `checkAddPath`
+(`s_max` of the outer `v''` against `d_min` accumulated over the inner
+`VPPs[0..=j]`) and the failure rule (incremented only when all four tests
+fail; reset by new guards, the direct interface edge and the zero-length path
+case) follow OMPL, so it is labelled SPARS. Deviations, all documented in
+rustdoc:
+
+- `addPathToSpanner` connects the first path state to `v'` and the last to
+  `v''`; OMPL passes them swapped.
+- When `q` itself is on the `v`/`v''` interface the dense path is `[q]`; OMPL
+  pushes `q` in front of the previous best path.
+- A missing interface neighbor (OMPL throws) skips the violation.
+- Every sparse edge of a quality path is checked first; the path is skipped
+  if one is invalid. OMPL adds them unchecked.
+- `reduceVertices` (randomized) is replaced by the deterministic greedy
+  `shortcut`.
+- Dense paths come from Dijkstra with ties by id; one search per `v''`
+  candidate finds the closest interface node, and its result is reused across
+  the outer loop.
+- Dense nodes without a visible guard have no representative and stay out of
+  the lists until the coverage criterion covers them in the same step.
+- Start and goal are not added as guards; queries connect them to visible
+  guards (multi-query, like `Spars2`). Invalid samples are not failures.
+
+OMPL's `s_max` ignores the paths it adds, so once many dense edges undercut
+`dense_delta`, quality paths keep creating violations and construction
+effectively never ends, even at the default stretch 3 (on the 10 x 10 slalom
+with `sparse_delta = 2`: from `dense_delta` of about 0.085 at stretch 3, about
+0.06 at stretch 1.2). The tests use `dense_delta = 0.05` (OMPL's default would
+be 0.014), where both stretch 1.2 and 100 finish, and cap the sample count so
+that a run that tips over fails instead of hanging. Tests check the representative
+invariant (unit test), coverage, the stretch bound against a dense PRM*,
+sparsity against the dense graph, tight versus loose stretch and
+reproducibility.
 
 ### Kinodynamic planners
 

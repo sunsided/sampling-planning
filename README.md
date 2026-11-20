@@ -1,6 +1,6 @@
 # sampling-planning: motion planning for Rust
 
-Motion planning with sampling-based planners: RRT, RRT*, RRT#, RRT-Connect, PRM, PRM*, SPARS2,
+Motion planning with sampling-based planners: RRT, RRT*, RRT#, RRT-Connect, PRM, PRM*, SPARS, SPARS2,
 FMT*, BFMT*, BIT*, SST, SST* and KPIECE.
 
 This is a **motion planning** crate. It is named `sampling-planning` because the crate name `motion-planning` was already taken on crates.io.
@@ -10,7 +10,6 @@ This is a **motion planning** crate. It is named `sampling-planning` because the
 Not implemented yet:
 
 - Batch-informed: AIT*, ABIT*, EIT*
-- Roadmaps: SPARS (with a dense graph)
 - Kinodynamic: multi-level KPIECE
 - State spaces: SE(3), compound spaces
 
@@ -21,8 +20,8 @@ Pre-release; the API will change. Implemented:
 - Tree planners: RRT, RRT* (radius or k-nearest) with optional informed sampling (Informed RRT*, with direct
   prolate-hyperspheroid sampling in Euclidean spaces), RRT-Connect (bidirectional), RRT# (RRG with LPA*-style replanning).
 - Roadmaps: PRM (fixed radius or fixed k), PRM* (shrinking radius or `k ln n` nearest), lazy
-  PRM, SPARS2 (sparse roadmap spanner); multi-query, with Dijkstra queries on a reusable
-  roadmap.
+  PRM, SPARS (sparse roadmap spanner over a dense PRM* graph), SPARS2 (without one);
+  multi-query, with Dijkstra queries on a reusable roadmap.
 - Batch-informed planners: BIT* (radius or k-nearest, informed batches, pruning).
 - Batch planners: FMT* (fast marching tree) and BFMT* (bidirectional, optimal or first-meeting
   termination).
@@ -40,7 +39,7 @@ Pre-release; the API will change. Implemented:
 Validity checks are three-valued (valid, invalid, unknown); planners treat unknown as invalid.
 
 See [docs/design.md](docs/design.md) for the design and milestones, and run the example, which
-compares RRT, RRT-Connect, RRT*, Informed RRT*, RRT#, PRM*, SPARS2, FMT*, BFMT* and BIT* on one
+compares RRT, RRT-Connect, RRT*, Informed RRT*, RRT#, PRM*, SPARS, SPARS2, FMT*, BFMT* and BIT* on one
 world and draws their paths:
 
 ```sh

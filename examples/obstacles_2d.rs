@@ -17,7 +17,8 @@ use sampling_planning::{
     ValidityChecker, discretized_motion,
     informed::{BitStar, BitStarConfig},
     roadmaps::{
-        BfmtStar, BfmtStarConfig, FmtStar, FmtStarConfig, Prm, PrmConfig, Spars2, Spars2Config,
+        BfmtStar, BfmtStarConfig, FmtStar, FmtStarConfig, Prm, PrmConfig, Spars, Spars2,
+        Spars2Config, SparsConfig,
     },
     trees::{Rrt, RrtConfig, RrtConnect, RrtSharp, RrtStar, RrtStarConfig},
 };
@@ -166,8 +167,8 @@ fn tree_planners(seed: u64) -> [Outcome; 5] {
     ]
 }
 
-/// The multi-query roadmaps PRM* and SPARS2 on the slalom.
-fn roadmap_planners(seed: u64) -> [Outcome; 2] {
+/// The multi-query roadmaps PRM*, SPARS and SPARS2 on the slalom.
+fn roadmap_planners(seed: u64) -> [Outcome; 3] {
     let rng = || Pcg64Mcg::seed_from_u64(seed);
     let world = problem();
     let (start, goal) = (world.start, world.goal);
@@ -183,6 +184,21 @@ fn roadmap_planners(seed: u64) -> [Outcome; 2] {
             (
                 prm.query(&start, &goal).expect("start is free"),
                 prm.node_count(),
+            )
+        }),
+        timed("SPARS", || {
+            let mut spars = Spars::with_nearest_neighbors(
+                Euclidean,
+                sampler,
+                Walls,
+                SparsConfig::new(2.0, 0.05),
+                KdTree::default(),
+            )
+            .expect("valid config");
+            spars.construct(20_000, &mut rng());
+            (
+                spars.query(&start, &goal).expect("start is free"),
+                spars.node_count(),
             )
         }),
         timed("SPARS2", || {

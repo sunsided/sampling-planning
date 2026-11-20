@@ -5,8 +5,8 @@ use rand_pcg::Pcg64Mcg;
 use sampling_planning::{
     Euclidean, GoalRegion, KdTree, Path, Sampler, UniformBox, Validity, ValidityChecker,
     roadmaps::{
-        BfmtStar, BfmtStarConfig, Connection, FmtStar, FmtStarConfig, Prm, PrmConfig, Spars2,
-        Spars2Config, Termination,
+        BfmtStar, BfmtStarConfig, Connection, FmtStar, FmtStarConfig, Prm, PrmConfig, Spars,
+        Spars2, Spars2Config, SparsConfig, Termination,
     },
 };
 
@@ -448,13 +448,16 @@ fn spars2_is_sparse_covering_and_within_its_stretch() {
             dense.cost
         );
 
-        assert_covers(&spars, seed);
+        assert_covers(|a, g| spars.query(a, g).expect("valid"), seed);
     }
 }
 
 /// Asserts that almost every valid state connects to the slalom goal through the roadmap: the
 /// coverage and connectivity properties together.
-fn assert_covers(spars: &Spars2<Euclidean<2>, UniformBox<2>, Boxes, KdTree<2>>, seed: u64) {
+fn assert_covers(
+    query: impl Fn(&[f64; 2], &GoalRegion<[f64; 2]>) -> Option<Path<[f64; 2]>>,
+    seed: u64,
+) {
     let world = slalom();
     let mut sampler = world.sampler;
     let mut rng = Pcg64Mcg::seed_from_u64(100 + seed);
@@ -469,7 +472,7 @@ fn assert_covers(spars: &Spars2<Euclidean<2>, UniformBox<2>, Boxes, KdTree<2>>, 
         }
 
         tried += 1;
-        let path = spars.query(&state, &world.goal).expect("valid");
+        let path = query(&state, &world.goal);
         connected += usize::from(path.is_some_and(|path| path.states.len() > 1));
     }
 
@@ -482,29 +485,10 @@ fn assert_covers(spars: &Spars2<Euclidean<2>, UniformBox<2>, Boxes, KdTree<2>>, 
 #[test]
 fn spars2_with_a_tighter_stretch_adds_shortcuts_and_shortens_paths() {
     let (tight, loose) = (spars2_slalom_with(5, 1.2), spars2_slalom_with(5, 100.0));
-    let world = slalom();
-    let mut sampler = world.sampler;
-    let mut rng = Pcg64Mcg::seed_from_u64(77);
-    let (mut tight_total, mut loose_total, mut pairs) = (0.0, 0.0, 0);
-
-    while pairs < 50 {
-        let (a, b) = (sampler.sample(&mut rng), sampler.sample(&mut rng));
-        if !(world.checker.check_state(&a).is_valid() && world.checker.check_state(&b).is_valid()) {
-            continue;
-        }
-
-        let goal = GoalRegion::new(b, 0.0);
-        let (Some(t), Some(l)) = (
-            tight.query(&a, &goal).expect("valid"),
-            loose.query(&a, &goal).expect("valid"),
-        ) else {
-            continue;
-        };
-
-        tight_total += t.cost;
-        loose_total += l.cost;
-        pairs += 1;
-    }
+    let (tight_total, loose_total) = total_costs(
+        |a, g| tight.query(a, g).expect("valid"),
+        |a, g| loose.query(a, g).expect("valid"),
+    );
 
     assert!(
         tight.guard_counts()[3] > loose.guard_counts()[3],
@@ -517,6 +501,36 @@ fn spars2_with_a_tighter_stretch_adds_shortcuts_and_shortens_paths() {
         tight_total < loose_total,
         "tight {tight_total} vs loose {loose_total}"
     );
+}
+
+/// The total path costs of two roadmaps over the same 50 random valid slalom start and goal
+/// pairs that both connect.
+fn total_costs(
+    tight: impl Fn(&[f64; 2], &GoalRegion<[f64; 2]>) -> Option<Path<[f64; 2]>>,
+    loose: impl Fn(&[f64; 2], &GoalRegion<[f64; 2]>) -> Option<Path<[f64; 2]>>,
+) -> (f64, f64) {
+    let world = slalom();
+    let mut sampler = world.sampler;
+    let mut rng = Pcg64Mcg::seed_from_u64(77);
+    let (mut tight_total, mut loose_total, mut pairs) = (0.0, 0.0, 0);
+
+    while pairs < 50 {
+        let (a, b) = (sampler.sample(&mut rng), sampler.sample(&mut rng));
+        if !(world.checker.check_state(&a).is_valid() && world.checker.check_state(&b).is_valid()) {
+            continue;
+        }
+
+        let goal = GoalRegion::new(b, 0.0);
+        let (Some(t), Some(l)) = (tight(&a, &goal), loose(&a, &goal)) else {
+            continue;
+        };
+
+        tight_total += t.cost;
+        loose_total += l.cost;
+        pairs += 1;
+    }
+
+    (tight_total, loose_total)
 }
 
 #[test]
@@ -539,4 +553,93 @@ fn spars2_quality_guards_appear_and_runs_are_reproducible() {
     }
 
     assert!(quality > 0, "the quality criterion added paths");
+}
+
+/// A SPARS roadmap over the slalom with the given seed and stretch factor, constructed to
+/// completion. `dense_delta` is far above OMPL's thousandth of the extent so that the small
+/// dense graph has interfaces at all.
+fn spars_slalom_with(
+    seed: u64,
+    stretch: f64,
+) -> Spars<Euclidean<2>, UniformBox<2>, Boxes, KdTree<2>> {
+    let world = slalom();
+    let mut config = SparsConfig::new(2.0, 0.05);
+    config.stretch = stretch;
+    let mut spars = Spars::with_nearest_neighbors(
+        world.space,
+        world.sampler,
+        world.checker,
+        config,
+        KdTree::default(),
+    )
+    .expect("valid");
+    // A cap just above the passing runs, so that a run which stops converging fails.
+    spars.construct(12_000, &mut Pcg64Mcg::seed_from_u64(seed));
+
+    spars
+}
+
+#[test]
+fn spars_is_sparse_covering_and_within_its_stretch() {
+    let dense = slalom_query(&mut slalom_roadmap(star(), 4000)).expect("connected");
+
+    for seed in 0..2 {
+        let spars = spars_slalom_with(seed, 3.0);
+        assert!(spars.is_complete(), "seed {seed}: construction finished");
+        assert!(
+            spars.node_count() * 20 < spars.dense_node_count(),
+            "seed {seed}: {} guards for {} dense nodes",
+            spars.node_count(),
+            spars.dense_node_count()
+        );
+
+        let path = spars
+            .query(&slalom().start, &slalom().goal)
+            .expect("valid start")
+            .expect("connected");
+        assert_solves_with(&slalom(), &path, f64::INFINITY);
+        // Asymptotic near-optimality: at most t c* plus a term in the visibility range.
+        assert!(
+            path.cost <= 3.0 * dense.cost + 4.0 * 2.0,
+            "seed {seed}: {} vs dense {}",
+            path.cost,
+            dense.cost
+        );
+
+        assert_covers(|a, g| spars.query(a, g).expect("valid"), seed);
+    }
+}
+
+#[test]
+fn spars_with_a_tighter_stretch_adds_quality_paths_and_shortens_paths() {
+    let (tight, loose) = (spars_slalom_with(0, 1.2), spars_slalom_with(0, 100.0));
+    let (tight_total, loose_total) = total_costs(
+        |a, g| tight.query(a, g).expect("valid"),
+        |a, g| loose.query(a, g).expect("valid"),
+    );
+
+    assert!(tight.is_complete() && loose.is_complete());
+    assert!(
+        tight.guard_counts()[3] > loose.guard_counts()[3],
+        "{:?} vs {:?}",
+        tight.guard_counts(),
+        loose.guard_counts()
+    );
+    assert!(tight.edge_count() > loose.edge_count());
+    assert!(
+        tight_total < loose_total,
+        "tight {tight_total} vs loose {loose_total}"
+    );
+}
+
+#[test]
+fn spars_runs_are_reproducible() {
+    let (a, b) = (spars_slalom_with(1, 3.0), spars_slalom_with(1, 3.0));
+
+    assert_eq!(a.guard_counts(), b.guard_counts());
+    assert_eq!(a.edge_count(), b.edge_count());
+    assert_eq!(a.dense_node_count(), b.dense_node_count());
+
+    let query = |spars: &Spars<_, _, _, _>| spars.query(&slalom().start, &slalom().goal);
+    assert_eq!(query(&a), query(&b));
 }

@@ -302,26 +302,14 @@ where
     /// Connectivity: if `q` sees guards of different components, adds it as a guard joined to
     /// one guard of each. Returns whether it did.
     fn check_connectivity(&mut self, q: &Sp::State, visible: &[usize]) -> bool {
-        let mut links = Vec::new();
-
-        for (i, &a) in visible.iter().enumerate() {
-            for &b in &visible[i + 1..] {
-                if !self.graph.same_component(a, b) {
-                    links.extend([a, b]);
-                }
-            }
-        }
+        let links = self.graph.connectivity_links(visible);
 
         if links.is_empty() {
             return false;
         }
 
         let guard = self.add_guard(q.clone(), GuardKind::Connectivity);
-        for link in links {
-            if !self.graph.has_edge(guard, link) && !self.graph.same_component(link, guard) {
-                self.graph.connect(guard, link);
-            }
-        }
+        self.graph.connect_links(guard, &links);
 
         true
     }
@@ -329,13 +317,9 @@ where
     /// Interface: if the two closest guards of `q` are both visible but not adjacent, connects
     /// them directly or through `q`. Returns whether it did.
     fn check_interface(&mut self, q: &Sp::State, near: &[usize], visible: &[usize]) -> bool {
-        let [v1, v2, ..] = *visible else {
+        let Some((v1, v2)) = self.graph.interface_pair(near, visible) else {
             return false;
         };
-
-        if near[..2] != [v1, v2] || self.graph.has_edge(v1, v2) {
-            return false;
-        }
 
         if self.is_edge_valid(&self.graph.states[v1], &self.graph.states[v2]) {
             self.graph.connect(v1, v2);
@@ -429,18 +413,9 @@ where
     /// where `sigma` lies) for every pair `(r, r')` of `v`'s neighbors that are not adjacent,
     /// if it brings the pair's points closer.
     fn update_pair_points(&mut self, v: usize, point: &Sp::State, r: usize, sigma: &Sp::State) {
-        for r_prime in self.vpp(v, r) {
+        for r_prime in self.graph.non_adjacent_neighbors(v, r) {
             self.distance_check(v, point, r, sigma, r_prime);
         }
-    }
-
-    /// The neighbors `r'` of guard `v` other than `r` that are not adjacent to `r`.
-    fn vpp(&self, v: usize, r: usize) -> Vec<usize> {
-        self.graph.adjacency[v]
-            .iter()
-            .copied()
-            .filter(|&other| other != r && !self.graph.has_edge(other, r))
-            .collect()
     }
 
     /// Stores `(point, sigma)` as `v`'s interface point toward `r` for the pair `(r, r')` when
@@ -506,7 +481,7 @@ where
         let neighbors = self.graph.adjacency[v].clone();
 
         for r in neighbors {
-            for r_prime in self.vpp(v, r) {
+            for r_prime in self.graph.non_adjacent_neighbors(v, r) {
                 let through_v = self.longest_path_estimate(v, r, r_prime);
 
                 if through_v > self.config.stretch * self.interface_distance(v, r, r_prime) {

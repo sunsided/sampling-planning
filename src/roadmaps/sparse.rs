@@ -129,6 +129,57 @@ impl<S: Clone, N> SparseGraph<S, N> {
         self.components.find(a) == self.components.find(b)
     }
 
+    /// The guards of `visible` that lie in a different component from another one of them,
+    /// in pair order: each pair `(a, b)` with `a` before `b` in different components adds both.
+    /// Empty if all visible guards are connected (OMPL's connectivity links).
+    pub(super) fn connectivity_links(&mut self, visible: &[usize]) -> Vec<usize> {
+        let mut links = Vec::new();
+
+        for (i, &a) in visible.iter().enumerate() {
+            for &b in &visible[i + 1..] {
+                if !self.same_component(a, b) {
+                    links.extend([a, b]);
+                }
+            }
+        }
+
+        links
+    }
+
+    /// Connects the new connectivity guard `guard` to each of `links` that is not yet adjacent
+    /// to it or in its component, so that each component is joined once.
+    pub(super) fn connect_links(&mut self, guard: usize, links: &[usize]) {
+        for &link in links {
+            if !self.has_edge(guard, link) && !self.same_component(link, guard) {
+                self.connect(guard, link);
+            }
+        }
+    }
+
+    /// The interface pair of a sample: its two closest guards `(v1, v2)` when both are visible
+    /// and not adjacent, else `None`. `near` and `visible` come from [`Self::neighborhood`].
+    pub(super) fn interface_pair(
+        &self,
+        near: &[usize],
+        visible: &[usize],
+    ) -> Option<(usize, usize)> {
+        let [v1, v2, ..] = *visible else {
+            return None;
+        };
+
+        (near[..2] == [v1, v2] && !self.has_edge(v1, v2)).then_some((v1, v2))
+    }
+
+    /// The neighbors `r'` of guard `v` other than `r` that are not adjacent to `r` (OMPL's
+    /// `computeVPP`), in edge order.
+    pub(super) fn non_adjacent_neighbors(&self, v: usize, r: usize) -> Vec<usize> {
+        self.adjacency[v]
+            .iter()
+            .copied()
+            .filter(|&other| other != r && !self.has_edge(other, r))
+            .collect()
+    }
+
     /// Adds a guard and returns its id.
     pub(super) fn add_guard<Sp>(&mut self, state: S, kind: GuardKind) -> usize
     where
@@ -145,6 +196,20 @@ impl<S: Clone, N> SparseGraph<S, N> {
         id
     }
 
+    /// The guards within `radius` of `state`, closest first (ties by id).
+    fn near_sorted<Sp>(&self, space: &Sp, state: &S, radius: f64) -> Vec<usize>
+    where
+        Sp: StateSpace<State = S>,
+        N: NearestNeighbors<Sp>,
+    {
+        let mut near = Vec::new();
+        self.nn.within_radius(space, state, radius, &mut near);
+        let distance = |id: usize| space.distance(state, &self.states[id]);
+        near.sort_by(|&a, &b| distance(a).total_cmp(&distance(b)).then(a.cmp(&b)));
+
+        near
+    }
+
     /// The guards within `radius` of `state`, closest first (ties by id), and the subset that
     /// `visible` accepts, in the same order.
     pub(super) fn neighborhood<Sp>(
@@ -158,10 +223,7 @@ impl<S: Clone, N> SparseGraph<S, N> {
         Sp: StateSpace<State = S>,
         N: NearestNeighbors<Sp>,
     {
-        let mut near = Vec::new();
-        self.nn.within_radius(space, state, radius, &mut near);
-        let distance = |id: usize| space.distance(state, &self.states[id]);
-        near.sort_by(|&a, &b| distance(a).total_cmp(&distance(b)).then(a.cmp(&b)));
+        let near = self.near_sorted(space, state, radius);
 
         let visible = near
             .iter()
@@ -170,6 +232,24 @@ impl<S: Clone, N> SparseGraph<S, N> {
             .collect();
 
         (near, visible)
+    }
+
+    /// The closest guard within `radius` of `state` (ties by id) that `visible` accepts, or
+    /// `None`. Tests visibility closest first and stops at the first accepted guard.
+    pub(super) fn closest_visible<Sp>(
+        &self,
+        space: &Sp,
+        state: &S,
+        radius: f64,
+        visible: impl Fn(&S) -> bool,
+    ) -> Option<usize>
+    where
+        Sp: StateSpace<State = S>,
+        N: NearestNeighbors<Sp>,
+    {
+        let near = self.near_sorted(space, state, radius);
+
+        near.into_iter().find(|&id| visible(&self.states[id]))
     }
 
     /// The cheapest path from `start` to `goal` over the graph, connecting both to every
