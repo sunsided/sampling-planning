@@ -9,7 +9,8 @@
 //!
 //! A [`Problem`] bundles everything a planner needs:
 //!
-//! - a [`StateSpace`] with a metric and interpolation, for example [`Euclidean`];
+//! - a [`StateSpace`] with a metric and interpolation, for example [`Euclidean`], [`So2`],
+//!   [`Se2`], or the car-like [`Dubins`] and [`ReedsShepp`];
 //! - a [`Sampler`] that draws states, for example [`UniformBox`];
 //! - a [`ValidityChecker`] for states and motions, which answers with a three-valued
 //!   [`Validity`]. Planners accept only [`Validity::Valid`]; [`Validity::Unknown`] is rejected
@@ -81,8 +82,7 @@
 //!
 //! ## Planned scope
 //!
-//! AIT*, ABIT*, EIT*, SPARS and more state spaces (SO(2),
-//! SE(2), SE(3), compound spaces).
+//! AIT*, ABIT*, EIT*, SPARS, and more state spaces (SE(3), compound spaces).
 //!
 //! ## Status
 //!
@@ -116,6 +116,9 @@ pub use problem::{Path, Problem};
 pub use rand_core;
 pub use sampler::{INFORMED_BOX_ATTEMPTS, ProlateHyperspheroid, Sampler, UniformBox, unit_f64};
 pub use shortcut::{shortcut, shortcut_random};
-pub use space::{Euclidean, StateSpace};
+pub use space::{
+    Dubins, DubinsPath, DubinsWord, Euclidean, ReedsShepp, ReedsSheppPath, Se2, Se2State, Segment,
+    SegmentKind, So2, StateSpace, UniformAngle, UniformSe2, angle_difference, wrap_angle,
+};
 pub use steering::{Steering, StraightLine};
 pub use validity::{Validity, ValidityChecker, discretized_motion};
