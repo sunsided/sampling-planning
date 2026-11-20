@@ -39,7 +39,9 @@ Pre-release; the API will change. Implemented:
 
 Validity checks are three-valued (valid, invalid, unknown); planners treat unknown as invalid.
 
-See [docs/design.md](docs/design.md) for the design and milestones, and run the example:
+See [docs/design.md](docs/design.md) for the design and milestones, and run the example, which
+compares RRT, RRT-Connect, RRT*, Informed RRT*, RRT#, PRM*, SPARS2, FMT*, BFMT* and BIT* on one
+world and draws their paths:
 
 ```sh
 cargo run --release --example obstacles_2d
