@@ -9,7 +9,7 @@ for continuous configuration spaces. It is not a task planner. The name
 | Module | Planners |
 | --- | --- |
 | `trees` | RRT, RRT*, RRT*-k, Informed RRT*, RRT#, RRT-Connect |
-| `informed` | later: BIT*, AIT*, ABIT*, EIT* |
+| `informed` | BIT*; later AIT*, ABIT*, EIT* |
 | `roadmaps` | PRM, PRM*, k-nearest PRM*, lazy PRM, FMT*, BFMT*; later SPARS, SPARS2 |
 | `kinodynamic` | SST, SST*, KPIECE |
 
@@ -268,6 +268,30 @@ pairs. Edges are direct motions along `interpolate`.
   wavefront dies) is not implemented: a dead batch returns no path, like
   FMT*.
 
+### Batch-informed planners
+
+`BitStar` follows Algorithms 1 to 3 of Gammell, Barfoot and Srinivasa 2020
+(arXiv 1707.01888): vertex queue by `g + h_hat` (ties by `g`), edge queue by
+`g + c_hat + h_hat`, then `g + c_hat`, then `g`; a batch ends when the best
+edge cannot improve the solution, then Prune (Algorithm 3: drop samples with
+`f_hat >= c`, remove vertices with `f_hat > c` or `g + h_hat > c` in order of
+`g`, recycle those with `f_hat < c` as fresh samples) and a new informed
+batch. Heuristics are `g_hat = d(start, x)`, `h_hat = max(0, d(x, center) -
+tolerance)`, `c_hat = d`; the goal center is the first sample, any vertex in
+the goal region is a solution. Like RRT* it takes space, sampler, checker,
+start and goal directly, since it needs no steering.
+
+- The radius is `min(gamma (ln q / q)^(1/d), max_radius)` with
+  `q = |V| + |X_unconn| - m`, or `ceil(k ln q)` nearest; the bounds are the
+  paper's eqs. 1 and 2. The paper takes the smaller of the free and the
+  informed volume in eq. 1; the crate keeps the user's `gamma` (free volume),
+  which is admissible but uses larger neighborhoods.
+- Batches come from `Sampler::sample_informed`, falling back to rejection,
+  and keep only valid states with `f_hat < c_best`.
+- A rewiring lowers the costs of a subtree and makes queue keys stale; both
+  heaps are re-keyed before the next pop, as OMPL does.
+- Pruned states stay in the node arena (marked) until the planner is dropped.
+
 ### Kinodynamic planners
 
 `Propagator` (control sampling, forward simulation, control dimension) and
@@ -371,7 +395,9 @@ Float math (`sqrt`, `ln`, `powf`) is not in `core`. Decision: always use
 - L. Janson, E. Schmerling, A. Clark and M. Pavone. *Fast marching tree.*
   IJRR 34(7), 2015.
 - J. D. Gammell, T. D. Barfoot and S. S. Srinivasa. *Batch Informed Trees
-  (BIT\*).* IJRR 39(5), 2020.
+  (BIT\*): Informed asymptotically optimal anytime search.* IJRR 39(5), 2020.
+- J. D. Gammell, S. S. Srinivasa and T. D. Barfoot. *Informed RRT\*.* IROS
+  2014. (Direct informed sampling.)
 - J. A. Starek, J. V. Gomez, E. Schmerling, L. Janson, L. Moreno and
   M. Pavone. *An asymptotically-optimal sampling-based algorithm for
   bi-directional motion planning.* IROS 2015. (BFMT*.)
@@ -388,8 +414,8 @@ Float math (`sqrt`, `ln`, `powf`) is not in `core`. Decision: always use
 2. **Roadmaps:** PRM, PRM*, lazy PRM, the k-d tree and k-nearest queries are
    done.
 3. **Informed trees:** informed sampling (direct for Euclidean boxes,
-   rejection otherwise), RRT-Connect and RRT# are done; BIT*, then AIT*/EIT*
-   are open.
+   rejection otherwise), RRT-Connect, RRT# and BIT* are done; AIT*, ABIT* and
+   EIT* are open.
 4. **FMT\*/BFMT\*:** done.
 5. **Kinodynamic:** `Propagator`, SST, SST* and single-level KPIECE are done;
    multi-level KPIECE is open.

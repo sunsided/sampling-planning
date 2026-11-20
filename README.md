@@ -1,7 +1,7 @@
 # sampling-planning: motion planning for Rust
 
 Motion planning with sampling-based planners: RRT, RRT*, RRT#, RRT-Connect, PRM, PRM*, FMT*,
-BFMT*, SST, SST* and KPIECE.
+BFMT*, BIT*, SST, SST* and KPIECE.
 
 This is a **motion planning** crate. It is named `sampling-planning` because the crate name `motion-planning` was already taken on crates.io.
 
@@ -9,7 +9,7 @@ This is a **motion planning** crate. It is named `sampling-planning` because the
 
 Not implemented yet:
 
-- Batch-informed: BIT*, AIT*, ABIT*, EIT*
+- Batch-informed: AIT*, ABIT*, EIT*
 - Roadmaps: SPARS, SPARS2
 - Kinodynamic: multi-level KPIECE
 - State spaces: SO(2), SE(2), SE(3), compound spaces
@@ -22,6 +22,7 @@ Pre-release; the API will change. Implemented:
   prolate-hyperspheroid sampling in Euclidean spaces), RRT-Connect (bidirectional), RRT# (RRG with LPA*-style replanning).
 - Roadmaps: PRM (fixed radius or fixed k), PRM* (shrinking radius or `k ln n` nearest), lazy
   PRM; multi-query, with Dijkstra queries on a reusable roadmap.
+- Batch-informed planners: BIT* (radius or k-nearest, informed batches, pruning).
 - Batch planners: FMT* (fast marching tree) and BFMT* (bidirectional, optimal or first-meeting
   termination).
 - Kinodynamic planners: SST and SST* over a `Propagator` (forward simulation) trait, with

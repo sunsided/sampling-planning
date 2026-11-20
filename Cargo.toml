@@ -1,6 +1,6 @@
 [package]
 name = "sampling-planning"
-description = "Motion planning with sampling-based planners: RRT, RRT*, PRM, FMT* and SST"
+description = "Motion planning with sampling-based planners: RRT, RRT*, RRT#, PRM, FMT*, BIT*, SST and KPIECE"
 version = "0.0.0"
 edition = "2024"
 rust-version = "1.85"
