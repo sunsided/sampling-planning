@@ -37,8 +37,11 @@ pub trait StateSpace {
     /// [`Sst`](crate::kinodynamic::Sst)) always measure from a tree node to the target and
     /// work with asymmetric distances. Planners that need symmetry: [`Prm`](crate::roadmaps::Prm)
     /// stores one cost per edge for both directions, the goal tree of
-    /// [`RrtConnect`](crate::trees::RrtConnect) measures from the target to its nodes, and
-    /// [`FmtStar`](crate::roadmaps::FmtStar) and [`KdTree`](crate::KdTree) assume a metric.
+    /// [`RrtConnect`](crate::trees::RrtConnect) measures from the target to its nodes,
+    /// [`Spars2`](crate::roadmaps::Spars2) keeps undirected edges, and
+    /// [`FmtStar`](crate::roadmaps::FmtStar), [`BfmtStar`](crate::roadmaps::BfmtStar),
+    /// [`BitStar`](crate::informed::BitStar) and [`KdTree`](crate::KdTree) assume a metric
+    /// for their neighborhoods and heuristics.
     fn distance(&self, from: &Self::State, to: &Self::State) -> f64;
 
     /// The configuration at fraction `t` in `[0, 1]` of the way from `from` to `to`.

@@ -3,6 +3,7 @@
 mod informed;
 mod kinodynamic;
 mod roadmaps;
+mod spaces;
 mod world;
 
 use rand_core::{Rng, SeedableRng};

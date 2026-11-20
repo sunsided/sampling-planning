@@ -12,7 +12,7 @@ Not implemented yet:
 - Batch-informed: AIT*, ABIT*, EIT*
 - Roadmaps: SPARS (with a dense graph)
 - Kinodynamic: multi-level KPIECE
-- State spaces: SO(2), SE(2), SE(3), compound spaces
+- State spaces: SE(3), compound spaces
 
 ## Status
 
@@ -31,8 +31,11 @@ Pre-release; the API will change. Implemented:
 - Path post-processing: greedy and randomized shortcutting (`shortcut`, `shortcut_random`).
 - Nearest neighbors: `LinearScan` (any metric), `KdTree` (Euclidean spaces, with removal and
   balanced rebuilds); nearest, radius and k-nearest queries.
-- Building blocks: `Euclidean<N>` spaces, `UniformBox` sampling, straight-line steering,
-  ball-shaped goal regions.
+- State spaces: `Euclidean<N>`, SO(2) (`So2`), SE(2) (`Se2`), Dubins and Reeds-Shepp cars
+  (`Dubins`, `ReedsShepp`, with their shortest paths exposed), with samplers `UniformBox`,
+  `UniformAngle` and `UniformSe2`.
+- Building blocks: straight-line steering (along the curve in the car spaces), ball-shaped goal
+  regions.
 
 Validity checks are three-valued (valid, invalid, unknown); planners treat unknown as invalid.
 

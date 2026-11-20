@@ -51,16 +51,46 @@ pub trait StateSpace {
 }
 ```
 
-- `distance` is a metric. Planners use it both as the nearest-neighbor
-  metric and as the path cost. A separate cost objective (clearance, energy)
+- `distance` is the shortest-motion length from `from` to `to`: non-negative,
+  zero for equal states, triangle inequality, and symmetric except for
+  `Dubins`. Forward tree planners (RRT, RRT*, RRT#, SST) always measure from a
+  tree node to the target, so they accept asymmetric distances; PRM (one cost
+  per edge), RRT-Connect's goal tree, FMT* and `KdTree` need symmetry.
+  Planners use it both as the nearest-neighbor metric and as the path cost. A separate cost objective (clearance, energy)
   is a later addition; it will be a new trait, not a change to this one.
 - `interpolate` is the geodesic at fraction `t` in `[0, 1]`.
 - `dimension` feeds the RRT*/PRM* connection radius.
 - Bounds are not part of the space. The sampler defines where states come
   from, the validity checker defines where they may be.
 
-Milestone 1 ships `Euclidean<N>` with state `[f64; N]`. Later spaces: SO(2),
-SE(2), SE(3) and compound spaces.
+Shipped spaces:
+
+- `Euclidean<N>` with state `[f64; N]`, the only space with `is_euclidean`.
+- `So2`: angles in radians, shortest-arc distance (at most `pi`) and
+  interpolation, results wrapped into `[-pi, pi)`; sampler `UniformAngle`.
+  `wrap_angle` and `angle_difference` are public helpers.
+- `Se2(rotation_weight)` over the struct `Se2State { x, y, theta }`, not
+  `[f64; 3]`, so Euclidean samplers and the k-d tree cannot be applied to it by
+  accident. Distance `|dp| + w |dtheta|` (a weighted sum of metrics, so a
+  metric; OMPL defaults to `w = 0.5`), straight position and short-arc heading
+  interpolation. Sampler `UniformSe2` (position box, all headings).
+- `Dubins(radius)` and `ReedsShepp(radius)` over `Se2State`, ported from
+  OMPL's `DubinsStateSpace` and `ReedsSheppStateSpace` (Mark Moll). Distance
+  is the shortest path length, interpolation walks that path
+  (`DubinsPath` / `ReedsSheppPath`, public with their `Segment`s, and
+  `candidates` lists every feasible word). Dubins searches all six words
+  instead of OMPL's long-path classification; both pick the shortest.
+  Reeds-Shepp evaluates OMPL's formulas 8.1 to 8.11 under time flip,
+  reflection and backward symmetries (44 candidates over 18 word shapes) and
+  wraps angles with a rounded quotient instead of `fmod`, which is about 20 %
+  faster and equal up to rounding.
+- All interpolations return `from` and `to` verbatim at `t = 0` and `t = 1`.
+- `StraightLine` steering works for the car spaces as is: it interpolates the
+  fraction `max_step / d` along the shortest path, and a prefix of a shortest
+  path is a shortest path, so the steered state is `max_step` away. Tests
+  check that `d(from, interpolate(t)) = t d(from, to)` for both.
+
+Still open: SE(3) and compound spaces.
 
 ### `Sampler`
 
@@ -417,6 +447,11 @@ Float math (`sqrt`, `ln`, `powf`) is not in `core`. Decision: always use
   bi-directional motion planning.* IROS 2015. (BFMT*.)
 - I. A. Sucan and L. E. Kavraki. *Kinodynamic motion planning by
   interior-exterior cell exploration.* WAFR 2008. (KPIECE.)
+- L. E. Dubins. *On curves of minimal length with a constraint on average
+  curvature, and with prescribed initial and terminal positions and
+  tangents.* American Journal of Mathematics 79(3), 1957.
+- J. A. Reeds and L. A. Shepp. *Optimal paths for a car that goes both
+  forwards and backwards.* Pacific Journal of Mathematics 145(2), 1990.
 - Y. Li, Z. Littlefield and K. E. Bekris. *Asymptotically optimal
   sampling-based kinodynamic planning.* IJRR 35(5), 2016. (SST, SST*.)
 
@@ -433,7 +468,8 @@ Float math (`sqrt`, `ln`, `powf`) is not in `core`. Decision: always use
 4. **FMT\*/BFMT\*:** done.
 5. **Kinodynamic:** `Propagator`, SST, SST* and single-level KPIECE are done;
    multi-level KPIECE is open.
-6. **More spaces:** SO(2), SE(2), SE(3), compound spaces.
+6. **More spaces:** SO(2), SE(2), Dubins and Reeds-Shepp are done; SE(3)
+   and compound spaces are open.
 
 ## Cross-crate needs
 

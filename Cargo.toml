@@ -34,3 +34,7 @@ unsafe_code = "forbid"
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 missing_docs_in_private_items = "warn"
+
+[[bench]]
+name = "spaces"
+harness = false
