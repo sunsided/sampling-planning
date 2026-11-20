@@ -9,7 +9,7 @@ for continuous configuration spaces. It is not a task planner. The name
 | Module | Planners |
 | --- | --- |
 | `trees` | RRT, RRT*, RRT*-k, Informed RRT*, RRT#, RRT-Connect |
-| `informed` | BIT*; later AIT*, ABIT*, EIT* |
+| `informed` | BIT*, AIT*; later ABIT*, EIT* |
 | `roadmaps` | PRM, PRM*, k-nearest PRM*, lazy PRM, SPARS, SPARS2, FMT*, BFMT* |
 | `kinodynamic` | SST, SST*, KPIECE |
 
@@ -322,6 +322,44 @@ start and goal directly, since it needs no steering.
   heaps are re-keyed before the next pop, as OMPL does.
 - Pruned states stay in the node arena (marked) until the planner is dropped.
 
+`AitStar` follows Algorithms 2 to 6 of Strub and Gammell 2020 (arXiv
+2002.06599): BIT*'s batches, pruning, radius and informed sampling (shared
+code in `informed/batch.rs` and `informed/queues.rs`), but no vertex queue.
+The forward search expands vertices straight into an edge queue keyed
+`(g_F + c_hat + h_con, g_F + c_hat, g_F)`, where `h_con` comes from a reverse
+search: LPA* from the goal states (the goal center and every sample in the
+goal region) over the batch's graph with `c_hat` costs and no collision
+checks, focused by `g_hat = d(start, x)`. An edge the forward search finds
+invalid is removed from that graph (`update_heuristic`) and LPA* repairs the
+cost-to-go incrementally.
+
+- The graph is fixed per batch: RGG neighbors, symmetrized (k-nearest is
+  not symmetric, LPA* needs both directions), plus the forward-tree edges
+  kept from earlier batches, minus invalid edges. Invalid edges are stored
+  directed (the travel direction that was checked), so directional checkers
+  stay sound; the paper and OMPL blacklist both directions.
+- Two suspected typos in the paper, resolved against OMPL's `AITstar.cpp`:
+  Algorithm 6 line 1 "x != x_init" is "x not in X_goal" (OMPL's
+  `updateReverseSearchVertex` returns early on goals); Algorithm 5's stopping
+  rule (lines 10 to 12, with the printed "<" on line 11) is replaced by
+  OMPL's edge-based rule: pause the reverse search once the best forward
+  edge's child is consistent (`h_con == h_exp`, two-sided) and the edge's
+  first key is below the reverse queue's. Sound because `g_hat` is
+  consistent, so an edge's first key bounds its child's LPA* key from above.
+- Forward keys follow `h_con` (each state lists its queued incoming edges,
+  as OMPL does); a rewiring re-keys the whole queue, like BIT*.
+- The neighbor updates use the optimized LPA* form (a lowered `h_exp` only
+  offers its own route, a raised one only re-evaluates neighbors that used
+  it); the results equal Algorithm 6's.
+- A new batch restarts the reverse search from the goals, as OMPL does. An
+  invalid edge is repaired by LPA* (`update_state` of its source), as in the
+  paper; OMPL instead invalidates the reverse branch below it.
+- Pruning uses the geometric `h_hat`, not `h_con`: `h_con` is a cost over the
+  current graph and not admissible for denser future batches.
+- A step that ends a batch is cheap, but the step that starts the next one
+  builds the whole graph; when the start is cut off from the goals in the
+  graph, every step is a new batch.
+
 ### Sparse roadmaps
 
 `Spars2` ports OMPL's `SPARStwo` (Dobson and Bekris 2013): each valid sample
@@ -484,6 +522,11 @@ Float math (`sqrt`, `ln`, `powf`) is not in `core`. Decision: always use
   IJRR 34(7), 2015.
 - J. D. Gammell, T. D. Barfoot and S. S. Srinivasa. *Batch Informed Trees
   (BIT\*): Informed asymptotically optimal anytime search.* IJRR 39(5), 2020.
+- M. P. Strub and J. D. Gammell. *Adaptively Informed Trees (AIT\*): Fast
+  asymptotically optimal path planning through adaptive heuristics.* ICRA
+  2020, arXiv 2002.06599.
+- S. Koenig, M. Likhachev and D. Furcy. *Lifelong Planning A\*.* Artificial
+  Intelligence 155(1-2), 2004. (LPA*, AIT*'s reverse search.)
 - J. D. Gammell, S. S. Srinivasa and T. D. Barfoot. *Informed RRT\*.* IROS
   2014. (Direct informed sampling.)
 - J. A. Starek, J. V. Gomez, E. Schmerling, L. Janson, L. Moreno and
@@ -507,7 +550,7 @@ Float math (`sqrt`, `ln`, `powf`) is not in `core`. Decision: always use
 2. **Roadmaps:** PRM, PRM*, lazy PRM, the k-d tree and k-nearest queries are
    done.
 3. **Informed trees:** informed sampling (direct for Euclidean boxes,
-   rejection otherwise), RRT-Connect, RRT# and BIT* are done; AIT*, ABIT* and
+   rejection otherwise), RRT-Connect, RRT#, BIT* and AIT* are done; ABIT* and
    EIT* are open.
 4. **FMT\*/BFMT\*:** done.
 5. **Kinodynamic:** `Propagator`, SST, SST* and single-level KPIECE are done;

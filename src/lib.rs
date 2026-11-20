@@ -1,7 +1,7 @@
 //! # Sampling-based motion planning
 //!
 //! Motion planning with sampling-based planners: RRT, RRT*, RRT#, RRT-Connect, PRM, PRM*,
-//! SPARS, SPARS2, FMT*, BFMT*, BIT*, SST, SST* and KPIECE.
+//! SPARS, SPARS2, FMT*, BFMT*, BIT*, AIT*, SST, SST* and KPIECE.
 //!
 //! This is a **motion planning** crate. It is named `sampling-planning` because the crate name `motion-planning` was already taken on crates.io.
 //!
@@ -73,7 +73,8 @@
 //!   the sparse roadmap spanners [`Spars`](roadmaps::Spars) and [`Spars2`](roadmaps::Spars2), and the batch
 //!   planners [`FmtStar`](roadmaps::FmtStar) and [`BfmtStar`](roadmaps::BfmtStar). They need no
 //!   steering function.
-//! - [`informed`]: the batch-informed [`BitStar`](informed::BitStar).
+//! - [`informed`]: the batch-informed [`BitStar`](informed::BitStar) and
+//!   [`AitStar`](informed::AitStar).
 //! - [`kinodynamic`]: [`Sst`](kinodynamic::Sst) (SST and SST*) and
 //!   [`Kpiece`](kinodynamic::Kpiece) over a [`Propagator`](kinodynamic::Propagator) that
 //!   forward-simulates controls.
@@ -82,7 +83,7 @@
 //!
 //! ## Planned scope
 //!
-//! AIT*, ABIT*, EIT*, and more state spaces (SE(3), compound spaces).
+//! ABIT*, EIT*, and more state spaces (SE(3), compound spaces).
 //!
 //! ## Status
 //!

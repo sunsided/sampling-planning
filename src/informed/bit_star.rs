@@ -1,16 +1,17 @@
 //! BIT*: batch informed trees (Gammell, Barfoot and Srinivasa 2020).
 
-mod queues;
-
 use alloc::{collections::BinaryHeap, vec::Vec};
 
 use rand_core::Rng;
 
 use super::Error;
-use crate::radius::{dimension_f64, k_constant_lower_bound, k_nearest_count, shrinking_radius};
-use crate::trees::{INFORMED_ATTEMPTS, RrtStarConfig};
+use super::batch::{Informed, Neighborhood};
+use super::queues::{EdgeEntry, VertexEntry};
+use crate::radius::k_constant_lower_bound;
+#[cfg(doc)]
+use crate::trees::INFORMED_ATTEMPTS;
+use crate::trees::RrtStarConfig;
 use crate::{GoalRegion, LinearScan, NearestNeighbors, Path, Sampler, StateSpace, ValidityChecker};
-use queues::{EdgeEntry, VertexEntry};
 
 /// Settings for [`BitStar`].
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -63,7 +64,7 @@ impl BitStarConfig {
     }
 
     /// Checks every field against its documented range.
-    fn validate(&self) -> Result<(), Error> {
+    pub(super) fn validate(&self) -> Result<(), Error> {
         let constant = self.k_nearest.unwrap_or(self.gamma);
 
         if self.batch_size == 0 {
@@ -224,15 +225,6 @@ pub struct BitStar<Sp: StateSpace, Sa, C, N = LinearScan<<Sp as StateSpace>::Sta
     batches: usize,
     /// Reused buffer for neighbor queries.
     near: Vec<usize>,
-}
-
-/// The neighbor rule of one batch.
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum Neighborhood {
-    /// Every state within this distance.
-    Radius(f64),
-    /// The `k` nearest states, each at most `max_radius` away.
-    Nearest(usize),
 }
 
 impl<Sp, Sa, C> BitStar<Sp, Sa, C>
@@ -471,45 +463,21 @@ where
         let mut added = 0;
 
         for _ in 0..self.config.batch_size {
-            if let Some(state) = self.draw_useful_sample(rng) {
+            let informed = Informed {
+                space: &self.space,
+                checker: &self.checker,
+                start: &self.start,
+                goal: &self.goal,
+                best_cost: self.best_cost,
+            };
+
+            if let Some(state) = informed.draw(&mut self.sampler, rng) {
                 self.push_node(state, Kind::Sample);
                 added += 1;
             }
         }
 
         added
-    }
-
-    /// Draws a valid state with `f_hat < c_best`, directly from the informed set when the
-    /// sampler supports it, in at most [`INFORMED_ATTEMPTS`] draws.
-    fn draw_useful_sample<R: Rng + ?Sized>(&mut self, rng: &mut R) -> Option<Sp::State> {
-        let bound = self.best_cost + self.goal.tolerance();
-
-        for _ in 0..INFORMED_ATTEMPTS {
-            let direct = if bound.is_finite() {
-                let center = self.goal.center();
-                self.sampler
-                    .sample_informed(&self.space, rng, &self.start, center, bound)
-            } else {
-                None
-            };
-            let state = direct.unwrap_or_else(|| self.sampler.sample(rng));
-
-            if self.is_useful_sample(&state) {
-                return Some(state);
-            }
-        }
-
-        None
-    }
-
-    /// Whether `state` is valid and could improve the current solution.
-    fn is_useful_sample(&self, state: &Sp::State) -> bool {
-        let g_hat = self.space.distance(&self.start, state);
-        let h_hat =
-            (self.space.distance(state, self.goal.center()) - self.goal.tolerance()).max(0.0);
-
-        g_hat + h_hat < self.best_cost && self.checker.check_state(state).is_valid()
     }
 
     /// Rebuilds the index over all vertices and samples and fixes this batch's neighbor rule
@@ -526,13 +494,7 @@ where
         }
 
         let q = live.saturating_sub(sampled).max(2);
-        self.neighborhood = match self.config.k_nearest {
-            Some(k_constant) => Neighborhood::Nearest(k_nearest_count(k_constant, q)),
-            None => Neighborhood::Radius(
-                shrinking_radius(self.config.gamma, q, dimension_f64(self.space.dimension()))
-                    .min(self.config.max_radius),
-            ),
-        };
+        self.neighborhood = Neighborhood::for_batch(&self.config, q, self.space.dimension());
     }
 
     /// Queues vertex `v` for expansion.
@@ -654,20 +616,12 @@ where
     /// Replaces `out` with the vertices and samples near node `v` under this batch's rule,
     /// excluding `v`.
     fn neighbors(&self, v: usize, out: &mut Vec<usize>) {
-        let state = &self.nodes[v].state;
-
-        match self.neighborhood {
-            Neighborhood::Radius(radius) => self.nn.within_radius(&self.space, state, radius, out),
-            Neighborhood::Nearest(k) => {
-                self.nn.k_nearest(&self.space, state, k + 1, out);
-
-                if self.config.max_radius.is_finite() {
-                    out.retain(|&x| self.edge_estimate(v, x) <= self.config.max_radius);
-                }
-            }
-        }
-
-        out.retain(|&x| x != v);
+        self.neighborhood.query(
+            (&self.space, &self.nn),
+            (v, &self.nodes[v].state),
+            (self.config.max_radius, |x| self.edge_estimate(v, x)),
+            out,
+        );
     }
 
     /// The admissible edge cost estimate `c_hat(v, x) = d(v, x)`.

@@ -1,13 +1,18 @@
-//! BIT*'s vertex and edge queue entries, ordered so that a max-heap pops the best first.
+//! Vertex and edge queue entries of the batch-informed planners, ordered so that a max-heap
+//! pops the best first.
+//!
+//! BIT* keys its vertex queue by `(g_T(v) + h(v), g_T(v))`; AIT* reuses [`VertexEntry`] for
+//! its reverse queue, keyed by LPA*'s `(min(h_con, h_exp) + g_hat, min(h_con, h_exp))`. Both
+//! key their edge queue by [`EdgeEntry`].
 
 use core::cmp::Ordering;
 
-/// A vertex-queue entry: ordered by `g_T(v) + h(v)`, then `g_T(v)`, then id, all ascending.
+/// A vertex-queue entry: ordered by `key`, then `cost`, then id, all ascending.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct VertexEntry {
-    /// `g_T(v) + h(v)` when queued.
+    /// The primary key when queued: `g_T(v) + h(v)` for BIT*, LPA*'s first key for AIT*.
     pub(super) key: f64,
-    /// `g_T(v)` when queued.
+    /// The secondary key when queued: `g_T(v)` for BIT*, LPA*'s second key for AIT*.
     pub(super) cost: f64,
     /// The vertex.
     pub(super) vertex: usize,
