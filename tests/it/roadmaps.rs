@@ -3,9 +3,10 @@
 use rand_core::SeedableRng;
 use rand_pcg::Pcg64Mcg;
 use sampling_planning::{
-    Euclidean, GoalRegion, KdTree, Path, UniformBox, Validity, ValidityChecker,
+    Euclidean, GoalRegion, KdTree, Path, Sampler, UniformBox, Validity, ValidityChecker,
     roadmaps::{
-        BfmtStar, BfmtStarConfig, Connection, FmtStar, FmtStarConfig, Prm, PrmConfig, Termination,
+        BfmtStar, BfmtStarConfig, Connection, FmtStar, FmtStarConfig, Prm, PrmConfig, Spars2,
+        Spars2Config, Termination,
     },
 };
 
@@ -392,4 +393,98 @@ fn bfmt_star_rejects_an_invalid_goal_center() {
             Validity::Invalid
         ))
     );
+}
+
+/// A SPARS2 roadmap over the slalom, constructed to completion with a fixed seed.
+fn spars2_slalom(seed: u64) -> Spars2<Euclidean<2>, UniformBox<2>, Boxes, KdTree<2>> {
+    let world = slalom();
+    let mut config = Spars2Config::new(2.0, 0.05);
+    config.max_failures = 1000;
+    let mut spars = Spars2::with_nearest_neighbors(
+        world.space,
+        world.sampler,
+        world.checker,
+        config,
+        KdTree::default(),
+    )
+    .expect("valid");
+    spars.construct(200_000, &mut Pcg64Mcg::seed_from_u64(seed));
+
+    spars
+}
+
+#[test]
+fn spars2_is_sparse_covering_and_within_its_stretch() {
+    let dense = slalom_query(&mut slalom_roadmap(star(), 4000)).expect("connected");
+
+    for seed in 0..2 {
+        let spars = spars2_slalom(seed);
+        assert!(spars.is_complete(), "seed {seed}: construction finished");
+        assert!(
+            spars.node_count() < 400,
+            "seed {seed}: {} guards",
+            spars.node_count()
+        );
+
+        let path = spars
+            .query(&slalom().start, &slalom().goal)
+            .expect("valid start")
+            .expect("connected");
+        assert_solves_with(&slalom(), &path, f64::INFINITY);
+        // Asymptotic near-optimality: at most t c* plus a term in the visibility range.
+        assert!(
+            path.cost <= 3.0 * dense.cost + 4.0 * 2.0,
+            "seed {seed}: {} vs dense {}",
+            path.cost,
+            dense.cost
+        );
+
+        assert_covers(&spars, seed);
+    }
+}
+
+/// Asserts that almost every valid state sees a guard: the coverage property.
+fn assert_covers(spars: &Spars2<Euclidean<2>, UniformBox<2>, Boxes, KdTree<2>>, seed: u64) {
+    let world = slalom();
+    let mut sampler = world.sampler;
+    let mut rng = Pcg64Mcg::seed_from_u64(100 + seed);
+    let (mut valid, mut covered) = (0, 0);
+
+    for _ in 0..1000 {
+        let state = sampler.sample(&mut rng);
+        if !world.checker.check_state(&state).is_valid() {
+            continue;
+        }
+
+        valid += 1;
+        let goal = GoalRegion::new(state, 0.0);
+        covered += usize::from(spars.query(&state, &goal).expect("valid").is_some());
+    }
+
+    assert!(
+        covered * 100 >= valid * 98,
+        "seed {seed}: {covered} of {valid}"
+    );
+}
+
+#[test]
+fn spars2_quality_guards_appear_and_runs_are_reproducible() {
+    let mut quality = 0;
+
+    for seed in 0..3 {
+        let (a, b) = (spars2_slalom(seed), spars2_slalom(seed));
+        assert_eq!(a.guard_counts(), b.guard_counts());
+        assert_eq!(a.edge_count(), b.edge_count());
+
+        let [coverage, connectivity, _, quality_guards] = a.guard_counts();
+        assert!(coverage > 0 && connectivity > 0, "{:?}", a.guard_counts());
+        // Cycles exist only through interface and quality edges.
+        assert!(
+            a.edge_count() >= a.node_count(),
+            "seed {seed}: a tree is no spanner"
+        );
+        quality += quality_guards;
+    }
+
+    assert!(quality > 0, "the quality criterion added paths");
 }

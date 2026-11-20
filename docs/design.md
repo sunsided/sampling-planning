@@ -10,7 +10,7 @@ for continuous configuration spaces. It is not a task planner. The name
 | --- | --- |
 | `trees` | RRT, RRT*, RRT*-k, Informed RRT*, RRT#, RRT-Connect |
 | `informed` | BIT*; later AIT*, ABIT*, EIT* |
-| `roadmaps` | PRM, PRM*, k-nearest PRM*, lazy PRM, FMT*, BFMT*; later SPARS, SPARS2 |
+| `roadmaps` | PRM, PRM*, k-nearest PRM*, lazy PRM, SPARS2, FMT*, BFMT*; later SPARS |
 | `kinodynamic` | SST, SST*, KPIECE |
 
 FMT* and BFMT* build a roadmap-like sample set and march over it, so they
@@ -291,6 +291,20 @@ start and goal directly, since it needs no steering.
 - A rewiring lowers the costs of a subtree and makes queue keys stale; both
   heaps are re-keyed before the next pop, as OMPL does.
 - Pruned states stay in the node arena (marked) until the planner is dropped.
+
+### Sparse roadmaps
+
+`Spars2` ports OMPL's `SPARStwo` (Dobson and Bekris 2013): each valid sample
+is tested for coverage, connectivity, interface and quality, in that order;
+construction is complete after `max_failures` consecutive samples that change
+nothing. Guards, undirected edges, union-find components and the multi-query
+Dijkstra live in `roadmaps/sparse.rs` for a later SPARS. Deviations from
+OMPL, all documented in rustdoc: the quality test uses OMPL's midpoint
+estimate but adds the interface-point path without smoothing; any change
+resets the failure counter; near samples follow the geodesic toward a uniform
+sample with a bounded number of attempts. Tests check coverage (98 % of
+random valid states see a guard), the stretch bound against a dense PRM*
+(`t c* + 4 Delta`), sparsity and that the quality criterion fires.
 
 ### Kinodynamic planners
 
