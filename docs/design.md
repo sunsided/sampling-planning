@@ -11,7 +11,7 @@ for continuous configuration spaces. It is not a task planner. The name
 | `trees` | RRT, RRT*, RRT*-k, Informed RRT*, RRT#, RRT-Connect |
 | `informed` | later: BIT*, AIT*, ABIT*, EIT* |
 | `roadmaps` | PRM, PRM*, k-nearest PRM*, lazy PRM, FMT*, BFMT*; later SPARS, SPARS2 |
-| `kinodynamic` | SST, SST*; later KPIECE |
+| `kinodynamic` | SST, SST*, KPIECE |
 
 FMT* and BFMT* build a roadmap-like sample set and march over it, so they
 live in `roadmaps` until they need their own module.
@@ -282,6 +282,20 @@ stable ids; freed ids are reused. The start and the current best goal node
 are never freed, so the best trajectory survives even when its goal node goes
 inactive; a replaced best goal node is freed once it is an inactive leaf.
 
+KPIECE (`Kpiece`, Sucan and Kavraki) follows OMPL's `control::KPIECE1` with
+one grid level over a user `Projection` (any `Fn(&S) -> [f64; K]`): cells
+with all `2K` axis neighbors are interior; an exterior cell is selected with
+probability `max(0.8, exterior share)`; cells rank by
+`score / ((neighbors + 1) coverage selections)` with a new cell's score
+`(1 + ln i) / (1e-3 + goal distance)`; a motion in the cell is drawn
+half-normally toward the newest; propagation stops at the first invalid step;
+the cell score is scaled by 0.9 after a long enough propagation and by 0.45
+otherwise; a propagation is split into one motion per run of steps in the
+same cell and kept only if it is "interesting" (OMPL's rule). The goal bias
+expands one of the 30 motions closest to the goal. Like OMPL it expands from
+the end state of the chosen motion, not a random state along it as in the
+paper. Cell selection scans all cells (OMPL keeps two heaps).
+
 ### Post-processing
 
 `shortcut` (greedy, deterministic, drops states) and `shortcut_random`
@@ -361,6 +375,8 @@ Float math (`sqrt`, `ln`, `powf`) is not in `core`. Decision: always use
 - J. A. Starek, J. V. Gomez, E. Schmerling, L. Janson, L. Moreno and
   M. Pavone. *An asymptotically-optimal sampling-based algorithm for
   bi-directional motion planning.* IROS 2015. (BFMT*.)
+- I. A. Sucan and L. E. Kavraki. *Kinodynamic motion planning by
+  interior-exterior cell exploration.* WAFR 2008. (KPIECE.)
 - Y. Li, Z. Littlefield and K. E. Bekris. *Asymptotically optimal
   sampling-based kinodynamic planning.* IJRR 35(5), 2016. (SST, SST*.)
 
@@ -375,7 +391,8 @@ Float math (`sqrt`, `ln`, `powf`) is not in `core`. Decision: always use
    rejection otherwise), RRT-Connect and RRT# are done; BIT*, then AIT*/EIT*
    are open.
 4. **FMT\*/BFMT\*:** done.
-5. **Kinodynamic:** `Propagator`, SST and SST* are done, KPIECE is open.
+5. **Kinodynamic:** `Propagator`, SST, SST* and single-level KPIECE are done;
+   multi-level KPIECE is open.
 6. **More spaces:** SO(2), SE(2), SE(3), compound spaces.
 
 ## Cross-crate needs

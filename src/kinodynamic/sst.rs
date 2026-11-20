@@ -586,7 +586,7 @@ where
 }
 
 /// A step count uniform in `1..=max_steps`.
-fn random_step_count<R: Rng + ?Sized>(max_steps: usize, rng: &mut R) -> usize {
+pub(super) fn random_step_count<R: Rng + ?Sized>(max_steps: usize, rng: &mut R) -> usize {
     let max = u64::try_from(max_steps).unwrap_or(u64::MAX);
     let offset = usize::try_from(rng.next_u64() % max).expect("below max_steps");
 

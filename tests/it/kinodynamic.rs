@@ -5,7 +5,8 @@ use rand_pcg::Pcg64Mcg;
 use sampling_planning::{
     Euclidean, KdTree, UniformBox, Validity, ValidityChecker,
     kinodynamic::{
-        Error, KinodynamicProblem, Propagator, Sst, SstConfig, SstStarSchedule, Trajectory,
+        Error, KinodynamicProblem, Kpiece, KpieceConfig, Propagator, Sst, SstConfig,
+        SstStarSchedule, Trajectory,
     },
     unit_f64,
 };
@@ -191,6 +192,81 @@ fn sst_is_reproducible_and_validates_its_inputs() {
     };
     assert_eq!(
         Sst::new(world(), config().star(bad_schedule)).err(),
+        Some(Error::InvalidSchedule)
+    );
+}
+
+/// KPIECE on the pole world with the identity projection and half-unit cells.
+fn kpiece(seed: u64) -> Option<Trajectory<[f64; 2], [f64; 2]>> {
+    let projection = |state: &[f64; 2]| *state;
+    let mut planner =
+        Kpiece::new(world(), projection, KpieceConfig::new([0.5, 0.5], DT, 10)).expect("valid");
+
+    planner.solve(30_000, &mut Pcg64Mcg::seed_from_u64(seed))
+}
+
+#[test]
+fn kpiece_solves_reproducibly() {
+    for seed in 0..3 {
+        let trajectory = kpiece(seed).expect("KPIECE solves the pole world");
+
+        assert_solves(&world(), &trajectory);
+        assert!(trajectory.cost >= time_lower_bound());
+        assert_eq!(Some(trajectory), kpiece(seed));
+    }
+}
+
+#[test]
+fn kpiece_covers_a_maze_it_has_to_explore() {
+    let mut maze = world();
+    maze.checker.obstacles = vec![
+        ([2.0, 0.0], [3.0, 8.0]),
+        ([5.0, 2.0], [6.0, 10.0]),
+        ([8.0, 0.0], [8.5, 8.0]),
+    ];
+    maze.start = [1.0, 1.0];
+    maze.goal = sampling_planning::GoalRegion::new([9.3, 1.0], 0.4);
+
+    let projection = |state: &[f64; 2]| *state;
+    let mut planner = Kpiece::new(
+        maze.clone(),
+        projection,
+        KpieceConfig::new([0.5, 0.5], DT, 10),
+    )
+    .expect("valid");
+    let trajectory = planner
+        .solve(100_000, &mut Pcg64Mcg::seed_from_u64(1))
+        .expect("KPIECE solves the maze");
+
+    assert_solves(&maze, &trajectory);
+    assert!(planner.cell_count() > 100, "{} cells", planner.cell_count());
+}
+
+#[test]
+fn kpiece_validates_its_config() {
+    let projection = |state: &[f64; 2]| *state;
+    let make = |config| Kpiece::new(world(), projection, config).err();
+    let base = KpieceConfig::new([0.5, 0.5], DT, 10);
+
+    assert_eq!(
+        make(KpieceConfig {
+            cell_size: [0.5, 0.0],
+            ..base
+        }),
+        Some(Error::InvalidRadius)
+    );
+    assert_eq!(
+        make(KpieceConfig {
+            min_steps: 11,
+            ..base
+        }),
+        Some(Error::InvalidPropagation)
+    );
+    assert_eq!(
+        make(KpieceConfig {
+            bad_score_factor: 0.0,
+            ..base
+        }),
         Some(Error::InvalidSchedule)
     );
 }

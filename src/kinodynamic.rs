@@ -1,10 +1,11 @@
-//! Kinodynamic planners: SST and SST*.
+//! Kinodynamic planners: SST, SST* and KPIECE.
 //!
 //! Kinodynamic planners cannot steer exactly between two states. They grow a tree by forward
 //! simulation instead: a [`Propagator`] applies a control for some time. Edges are therefore
 //! trajectories, solutions are [`Trajectory`] values with the controls that produce them, and
 //! the cost is the total control duration.
 
+mod kpiece;
 mod sst;
 
 use alloc::vec::Vec;
@@ -12,6 +13,7 @@ use core::fmt;
 
 use rand_core::Rng;
 
+pub use kpiece::{Kpiece, KpieceConfig, Projection};
 pub use sst::{Sst, SstConfig, SstStarSchedule};
 
 use crate::{GoalRegion, StateSpace, Validity};
@@ -77,11 +79,12 @@ pub enum Error {
     InvalidStart(Validity),
     /// The goal bias is not in `[0, 1]`.
     GoalBiasOutOfRange,
-    /// A radius is not positive and finite.
+    /// A radius or KPIECE cell size is not positive and finite.
     InvalidRadius,
     /// The integration step is not positive and finite, or the step count is zero.
     InvalidPropagation,
-    /// The SST* shrink factor is not in `(0, 1)` or the first epoch is empty.
+    /// The SST* shrink factor is not in `(0, 1)` or the first epoch is empty; or a KPIECE score
+    /// factor is not in `(0, 1]` or its exterior bias not in `[0, 1]`.
     InvalidSchedule,
 }
 
