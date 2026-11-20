@@ -111,9 +111,9 @@ where
 /// long and strictly cheaper.
 ///
 /// Unlike [`shortcut`] the endpoints of a shortcut lie anywhere on the path, not only at its
-/// states, so it also straightens corners. The new points are checked with
-/// [`ValidityChecker::check_state`] before they are used as a motion start. Run [`shortcut`]
-/// afterward to drop states that became redundant.
+/// states, so it also straightens corners. All three motions of a splice are checked: from
+/// the state before the cut to its first point, across the cut, and from its second point to
+/// the state after it. Run [`shortcut`] afterward to drop states that became redundant.
 ///
 /// # Examples
 ///
@@ -230,10 +230,19 @@ impl RandomCut {
         let old = space.distance(&from, &states[self.first_segment + 1])
             + path_length(space, &states[self.first_segment + 1..=self.second_segment])
             + space.distance(&states[self.second_segment], &to);
-        let allowed = checker.check_state(&from).is_valid()
-            && is_direct_motion_allowed(space, checker, &from, &to, max_edge);
+        if space.distance(&from, &to) >= old {
+            return None;
+        }
 
-        if !(allowed && space.distance(&from, &to) < old) {
+        // The stubs are pieces of checked motions, but a sampled or reachable-set check of a
+        // whole motion proves nothing about a piece of it, so they are checked on their own.
+        let before = &states[self.first_segment];
+        let after = &states[self.second_segment + 1];
+        let allowed = checker.check_motion(space, before, &from).is_valid()
+            && is_direct_motion_allowed(space, checker, &from, &to, max_edge)
+            && checker.check_motion(space, &to, after).is_valid();
+
+        if !allowed {
             return None;
         }
 
