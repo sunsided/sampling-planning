@@ -93,11 +93,16 @@ where
 
     /// Draws the goal center with probability `goal_bias`, otherwise a sampler state.
     pub(super) fn draw<R: Rng + ?Sized>(&mut self, rng: &mut R) -> Sp::State {
-        if unit_f64(rng) < self.goal_bias {
+        if self.roll_goal_bias(rng) {
             self.problem.goal.center().clone()
         } else {
             self.problem.sampler.sample(rng)
         }
+    }
+
+    /// Draws one uniform number and returns whether it falls under the goal bias.
+    pub(super) fn roll_goal_bias<R: Rng + ?Sized>(&self, rng: &mut R) -> bool {
+        unit_f64(rng) < self.goal_bias
     }
 
     /// Whether the motion from node `from` to `to` checks as valid. Unknown counts as invalid.

@@ -1,9 +1,13 @@
 //! Samplers: where planners draw new states from.
 
+mod informed;
 mod uniform_box;
 
+pub use informed::ProlateHyperspheroid;
 use rand_core::Rng;
-pub use uniform_box::UniformBox;
+pub use uniform_box::{INFORMED_BOX_ATTEMPTS, UniformBox};
+
+use crate::StateSpace;
 
 /// Draws states for a planner.
 ///
@@ -12,6 +16,40 @@ pub use uniform_box::UniformBox;
 pub trait Sampler<S> {
     /// Draws one state.
     fn sample<R: Rng + ?Sized>(&mut self, rng: &mut R) -> S;
+
+    /// Draws a state directly from the informed set
+    /// `{x : d(start, x) + d(x, goal) <= max_cost}` within this sampler's support, or returns
+    /// `None` to make the planner fall back to rejection sampling from [`Sampler::sample`].
+    ///
+    /// Informed planners ([`RrtStar`](crate::trees::RrtStar) with
+    /// [`informed`](crate::trees::RrtStarConfig::informed), BIT*) call this once a solution
+    /// exists. A returned state must lie in the informed set under `space`'s metric and be
+    /// distributed uniformly over the informed set intersected with the support of
+    /// [`Sampler::sample`]; otherwise the planner loses its optimality guarantees.
+    ///
+    /// When direct sampling does not apply (an unsupported space, or a set so large that
+    /// rejection is cheaper), return `None` **without** drawing from `rng`, so that the
+    /// fallback sees the same random stream as without this method. `None` after drawing is
+    /// allowed when an attempt budget runs out.
+    ///
+    /// The default returns `None`: rejection sampling, which works for every sampler and space.
+    /// [`UniformBox`] samples a [`ProlateHyperspheroid`] in Euclidean spaces.
+    fn sample_informed<Sp, R>(
+        &mut self,
+        space: &Sp,
+        rng: &mut R,
+        start: &S,
+        goal: &S,
+        max_cost: f64,
+    ) -> Option<S>
+    where
+        Sp: StateSpace<State = S>,
+        R: Rng + ?Sized,
+    {
+        let _ = (space, rng, start, goal, max_cost);
+
+        None
+    }
 }
 
 /// Draws a uniform `f64` in `[0, 1)` from one `next_u64` call.

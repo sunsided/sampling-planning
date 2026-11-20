@@ -29,14 +29,18 @@ pub struct RrtStarConfig {
     /// samples `x` with `d(start, x) + d(x, goal center) < c + goal tolerance`, the states that
     /// can still lie on a cheaper path.
     ///
-    /// Samples are drawn from the sampler and rejected, so this works for every
-    /// [`Sampler`] and [`StateSpace`], but costs up to [`INFORMED_ATTEMPTS`] sampler calls per
-    /// iteration when the informed set is small. Until the first solution the planner behaves
-    /// exactly as without it. Off by default.
+    /// Samplers that support it draw from the informed set directly
+    /// ([`Sampler::sample_informed`]); [`UniformBox`](crate::UniformBox) in a Euclidean space
+    /// samples the prolate hyperspheroid around start and goal center whenever it is smaller
+    /// than the box. Other samplers fall back to rejection, which works for every [`Sampler`]
+    /// and [`StateSpace`] but costs up to [`INFORMED_ATTEMPTS`] sampler calls per iteration when
+    /// the informed set is small. Goal bias still applies. Until the first solution the planner
+    /// behaves exactly as without it. Off by default.
     pub informed: bool,
 }
 
-/// The most samples an informed iteration draws before it settles for an uninformed one.
+/// The most samples a rejection-sampled informed iteration draws before it settles for an
+/// uninformed one.
 pub const INFORMED_ATTEMPTS: usize = 64;
 
 impl RrtStarConfig {
@@ -178,12 +182,44 @@ where
 
     /// Draws the next growth target: a goal-biased sample, restricted to the informed set when
     /// informed sampling is on and a solution exists.
+    ///
+    /// The informed set is sampled directly through [`Sampler::sample_informed`] when the
+    /// sampler supports it, and by rejection otherwise. A sampler that declines without drawing
+    /// leaves the random stream exactly as pure rejection sampling would use it.
     fn draw_target<R: Rng + ?Sized>(&mut self, rng: &mut R) -> Sp::State {
         let Some(bound) = self.informed_bound() else {
             return self.growth.draw(rng);
         };
 
-        let mut sample = self.growth.draw(rng);
+        if self.growth.roll_goal_bias(rng) {
+            return self.growth.problem.goal.center().clone();
+        }
+
+        let problem = &mut self.growth.problem;
+        let direct = problem.sampler.sample_informed(
+            &problem.space,
+            rng,
+            &problem.start,
+            problem.goal.center(),
+            bound,
+        );
+        if let Some(state) = direct {
+            return state;
+        }
+
+        let first = problem.sampler.sample(rng);
+
+        self.reject_until_informed(first, bound, rng)
+    }
+
+    /// Rejection sampling: replaces `sample` by fresh goal-biased draws until one lies in the
+    /// informed set below `bound`, at most [`INFORMED_ATTEMPTS`] samples in total.
+    fn reject_until_informed<R: Rng + ?Sized>(
+        &mut self,
+        mut sample: Sp::State,
+        bound: f64,
+        rng: &mut R,
+    ) -> Sp::State {
         for _ in 1..INFORMED_ATTEMPTS {
             if self.informed_cost(&sample) < bound {
                 break;

@@ -22,6 +22,10 @@ impl<const N: usize> StateSpace for Euclidean<N> {
     fn interpolate(&self, from: &[f64; N], to: &[f64; N], t: f64) -> [f64; N] {
         core::array::from_fn(|i| from[i] + (to[i] - from[i]) * t)
     }
+
+    fn is_euclidean(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]

@@ -187,12 +187,28 @@ When a node is rewired, the costs of all its descendants are recomputed, so
 the cost of every node, and the best solution cost, never increases.
 
 Informed RRT* is a config flag (`RrtStarConfig::informed`). Once a solution
-of cost `c` exists, samples with `d(start, x) + d(x, center) >= c + tolerance`
-are rejected, up to `INFORMED_ATTEMPTS` draws per iteration. The tolerance
-term keeps the set admissible for a ball goal. Rejection keeps the `Sampler`
-trait unchanged and works in every space; direct sampling of the prolate
-hyperspheroid would be faster when the set is thin but needs Euclidean
-structure, so it waits for a dedicated sampler.
+of cost `c` exists, targets come from the informed set
+`d(start, x) + d(x, center) < c + tolerance`; the tolerance term keeps the set
+admissible for a ball goal. Goal bias still applies.
+
+- `Sampler::sample_informed(space, rng, start, goal, max_cost)` is a provided
+  method that returns `None` by default. `UniformBox` overrides it: when the
+  space reports `StateSpace::is_euclidean` (only `Euclidean<N>` does), it
+  samples the `ProlateHyperspheroid` with the two foci and rejects samples
+  outside the box, which is uniform over the intersection. The unit-ball
+  sample is a normalized Box-Muller Gaussian vector scaled by `u^(1/N)`; the
+  rotation onto the focal axis is a Householder reflection, enough because all
+  conjugate radii are equal (Gammell et al. use an SVD for the general case).
+- It declines without touching the RNG when the set is degenerate or at least
+  as large as the box (then rejection from the box accepts more often), and
+  gives up after `INFORMED_BOX_ATTEMPTS` samples outside the box.
+- Declining falls back to rejection: up to `INFORMED_ATTEMPTS` draws per
+  iteration. Declining without drawing keeps the random stream identical to
+  pure rejection, so a run whose informed set covers the box is bit-identical
+  to an uninformed one; a test pins this.
+- `is_euclidean` is a provided method on `StateSpace` that defaults to
+  `false`, so a custom space over `[f64; N]` with another metric never gets
+  Euclidean ellipsoids.
 
 RRT-Connect roots a second tree at the goal center. Goal-tree edges are
 traveled toward the root, so they are checked in that direction
@@ -316,8 +332,9 @@ Float math (`sqrt`, `ln`, `powf`) is not in `core`. Decision: always use
    with goal bias, 2D obstacle example, integration tests.
 2. **Roadmaps:** PRM, PRM*, lazy PRM, the k-d tree and k-nearest queries are
    done.
-3. **Informed trees:** rejection-based informed sampling and RRT-Connect are
-   done; direct ellipsoid sampling, RRT#, BIT*, then AIT*/EIT* are open.
+3. **Informed trees:** informed sampling (direct for Euclidean boxes,
+   rejection otherwise) and RRT-Connect are done; RRT#, BIT*, then AIT*/EIT*
+   are open.
 4. **FMT\*/BFMT\*:** FMT* is done, BFMT* is open.
 5. **Kinodynamic:** `Propagator`, SST and SST* are done, KPIECE is open.
 6. **More spaces:** SO(2), SE(2), SE(3), compound spaces.

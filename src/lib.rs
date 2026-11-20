@@ -107,7 +107,7 @@ pub use goal::GoalRegion;
 pub use nearest::{KdTree, LinearScan, NearestNeighbors, RemovableNeighbors};
 pub use problem::{Path, Problem};
 pub use rand_core;
-pub use sampler::{Sampler, UniformBox, unit_f64};
+pub use sampler::{INFORMED_BOX_ATTEMPTS, ProlateHyperspheroid, Sampler, UniformBox, unit_f64};
 pub use shortcut::{shortcut, shortcut_random};
 pub use space::{Euclidean, StateSpace};
 pub use steering::{Steering, StraightLine};

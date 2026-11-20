@@ -26,4 +26,14 @@ pub trait StateSpace {
     ///
     /// `t = 0` yields `from` and `t = 1` yields `to`.
     fn interpolate(&self, from: &Self::State, to: &Self::State, t: f64) -> Self::State;
+
+    /// Whether states are coordinate vectors, [`StateSpace::distance`] is the Euclidean norm of
+    /// their difference and [`StateSpace::interpolate`] the straight line.
+    ///
+    /// Samplers that exploit Euclidean geometry, such as the direct informed sampling of
+    /// [`UniformBox`](crate::UniformBox), check this before they assume it. The default is
+    /// `false`, which is always safe.
+    fn is_euclidean(&self) -> bool {
+        false
+    }
 }

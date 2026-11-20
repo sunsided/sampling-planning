@@ -4,10 +4,11 @@ mod kinodynamic;
 mod roadmaps;
 mod world;
 
-use rand_core::SeedableRng;
+use rand_core::{Rng, SeedableRng};
 use rand_pcg::Pcg64Mcg;
 use sampling_planning::{
-    Euclidean, KdTree, StraightLine, UniformBox, Validity, shortcut, shortcut_random,
+    Euclidean, KdTree, Problem, Sampler, StraightLine, UniformBox, Validity, shortcut,
+    shortcut_random,
     trees::{Error, Rrt, RrtConfig, RrtConnect, RrtStar, RrtStarConfig},
 };
 use world::{
@@ -231,6 +232,49 @@ fn informed_rrt_star_converges_faster_on_an_open_world() {
             plain.cost
         );
     }
+}
+
+/// A [`UniformBox`] without direct informed sampling, so informed RRT* falls back to rejection.
+#[derive(Debug, Clone)]
+struct RejectionOnly(UniformBox<2>);
+
+impl Sampler<[f64; 2]> for RejectionOnly {
+    fn sample<R: Rng + ?Sized>(&mut self, rng: &mut R) -> [f64; 2] {
+        self.0.sample(rng)
+    }
+}
+
+#[test]
+fn direct_informed_sampling_beats_rejection_on_a_thin_informed_set() {
+    let (mut direct_total, mut rejection_total) = (0.0, 0.0);
+
+    for seed in 0..4 {
+        let mut direct = RrtStar::new(pole(), star_config().informed()).expect("valid problem");
+        direct.run(2000, &mut Pcg64Mcg::seed_from_u64(seed));
+        let direct = direct.best_path().expect("solved");
+        assert_solves(&pole(), &direct);
+        assert!(direct.cost >= POLE_OPTIMUM);
+
+        let world = pole();
+        let rejection_world = Problem {
+            space: world.space,
+            sampler: RejectionOnly(world.sampler),
+            checker: world.checker,
+            steering: world.steering,
+            start: world.start,
+            goal: world.goal,
+        };
+        let mut rejection = RrtStar::new(rejection_world, star_config().informed()).expect("valid");
+        rejection.run(2000, &mut Pcg64Mcg::seed_from_u64(seed));
+
+        direct_total += direct.cost;
+        rejection_total += rejection.best_path().expect("solved").cost;
+    }
+
+    assert!(
+        direct_total < rejection_total,
+        "direct {direct_total} vs rejection {rejection_total}"
+    );
 }
 
 #[test]

@@ -10,7 +10,7 @@ This is a **motion planning** crate. It is named `sampling-planning` because the
 Not implemented yet:
 
 - Tree expansion: RRT#
-- Batch-informed: BIT*, AIT*, ABIT*, EIT*, and direct ellipsoid sampling for informed planners
+- Batch-informed: BIT*, AIT*, ABIT*, EIT*
 - Roadmaps: SPARS, SPARS2, k-nearest PRM*
 - Fast marching: BFMT*
 - Kinodynamic: KPIECE
@@ -20,14 +20,16 @@ Not implemented yet:
 
 Pre-release; the API will change. Implemented:
 
-- Tree planners: RRT, RRT* with optional informed sampling (Informed RRT*), RRT-Connect
-  (bidirectional).
+- Tree planners: RRT, RRT* with optional informed sampling (Informed RRT*, with direct
+  prolate-hyperspheroid sampling in Euclidean spaces), RRT-Connect (bidirectional).
 - Roadmaps: PRM (fixed radius), PRM* (shrinking radius), lazy PRM; multi-query, with
   Dijkstra queries on a reusable roadmap.
 - Batch planners: FMT* (fast marching tree).
-- Kinodynamic planners: SST and SST* over a `Propagator` (forward simulation) trait.
+- Kinodynamic planners: SST and SST* over a `Propagator` (forward simulation) trait; inactive
+  leaves are freed.
 - Path post-processing: greedy and randomized shortcutting (`shortcut`, `shortcut_random`).
-- Nearest neighbors: `LinearScan` (any metric), `KdTree` (Euclidean spaces).
+- Nearest neighbors: `LinearScan` (any metric), `KdTree` (Euclidean spaces, with removal and
+  balanced rebuilds); nearest, radius and k-nearest queries.
 - Building blocks: `Euclidean<N>` spaces, `UniformBox` sampling, straight-line steering,
   ball-shaped goal regions.
 
