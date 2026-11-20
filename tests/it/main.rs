@@ -6,7 +6,7 @@ use rand_core::SeedableRng;
 use rand_pcg::Pcg64Mcg;
 use sampling_planning::{
     Euclidean, KdTree, StraightLine, UniformBox, Validity, shortcut, shortcut_random,
-    trees::{Error, Rrt, RrtConfig, RrtStar, RrtStarConfig},
+    trees::{Error, Rrt, RrtConfig, RrtConnect, RrtStar, RrtStarConfig},
 };
 use world::{Boxes, World2d, assert_solves, assert_solves_with, problem, slalom};
 
@@ -169,4 +169,43 @@ fn shortcutting_an_rrt_path_keeps_it_valid_and_shortens_it() {
     assert_solves_with(&world, &smoothed, f64::INFINITY);
     assert!(smoothed.cost <= greedy.cost);
     assert!(smoothed.cost >= SLALOM_OPTIMUM, "{}", smoothed.cost);
+}
+
+#[test]
+fn rrt_connect_finds_valid_paths_reproducibly() {
+    for seed in 0..5 {
+        let solve = || {
+            RrtConnect::new(slalom())
+                .expect("valid problem")
+                .solve(20_000, &mut Pcg64Mcg::seed_from_u64(seed))
+                .expect("RRT-Connect solves the slalom")
+        };
+        let path = solve();
+
+        assert_solves(&slalom(), &path);
+        assert!(path.cost >= SLALOM_OPTIMUM);
+        assert_eq!(path, solve());
+    }
+}
+
+#[test]
+fn rrt_connect_avoids_fog_and_rejects_bad_goals() {
+    let fogged = || {
+        problem(Boxes {
+            obstacles: Vec::new(),
+            fog: vec![([2.0, 2.0], [8.0, 8.0])],
+        })
+    };
+    let path = RrtConnect::new(fogged())
+        .expect("valid problem")
+        .solve(20_000, &mut Pcg64Mcg::seed_from_u64(2))
+        .expect("RRT-Connect goes around the fog");
+    assert_solves(&fogged(), &path);
+
+    let mut blocked = slalom();
+    blocked.goal = sampling_planning::GoalRegion::new([4.5, 1.0], 0.5);
+    assert_eq!(
+        RrtConnect::new(blocked).err(),
+        Some(Error::InvalidGoal(Validity::Invalid))
+    );
 }
