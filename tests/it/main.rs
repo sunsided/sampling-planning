@@ -2,6 +2,7 @@
 
 mod informed;
 mod kinodynamic;
+mod properties;
 mod roadmaps;
 mod spaces;
 mod world;

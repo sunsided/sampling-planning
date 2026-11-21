@@ -17,6 +17,7 @@ rand_core = { version = "0.10.1", default-features = false }
 
 [dev-dependencies]
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+proptest = "1.11.0"
 rand_pcg = "0.10.2"
 
 # The planner integration tests run thousands of motion checks; unoptimized they take minutes.
