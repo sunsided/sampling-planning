@@ -1,0 +1,17 @@
+# https://github.com/crate-ci/typos/blob/master/docs/reference.md
+[files]
+extend-exclude = [
+  "*.lock",
+  "fuzz/corpus/**",
+  "fuzz/artifacts/**",
+  "**/proptest-regressions/**",
+  "LICENSES/**",
+  "LICENSE-*",
+]
+
+[default.extend-words]
+# Project-specific words typos flags wrongly, e.g. `ser = "ser"`. Keep each entry justified.
+# EIT*: Effort Informed Trees, a planner named in the planned scope.
+EIT = "EIT"
+
+[default.extend-identifiers]
