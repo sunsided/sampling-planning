@@ -14,6 +14,7 @@ applyTo: "**/*.md,docs/**"
 - Code blocks are tagged with their language. The README has no Rust blocks and is not
   doctested; if it gains a Rust example, include it through a private `#[cfg(doctest)]`
   module in `src/lib.rs` so it compiles. The crate-level example lives in `src/lib.rs`.
-- `docs/design.md` records the design and milestones. Update it when a planner, trait or
-  state space is added or changes shape, and keep the README "Status" list in step.
+- `docs/design.md` records the design and what is not yet implemented. Update it when a
+  planner, trait or state space is added or changes shape, and keep the README "Features"
+  list in step.
 - Keep badges, the License section and the MSRV statement consistent with `Cargo.toml`.

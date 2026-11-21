@@ -1,7 +1,8 @@
 //! # Sampling-based motion planning
 //!
-//! Motion planning with sampling-based planners: RRT, RRT*, RRT#, RRT-Connect, PRM, PRM*,
-//! SPARS, SPARS2, FMT*, BFMT*, BIT*, AIT*, SST, SST* and KPIECE.
+//! Sampling-based motion planners for continuous configuration spaces: RRT, RRT*, RRT#,
+//! RRT-Connect, PRM, PRM*, SPARS, SPARS2, FMT*, BFMT*, BIT*, AIT*, SST, SST* and KPIECE.
+//! The crate is `#![no_std]` with `alloc`.
 //!
 //! This is a **motion planning** crate. It is named `sampling-planning` because the crate name `motion-planning` was already taken on crates.io.
 //!
@@ -81,13 +82,8 @@
 //!
 //! [`shortcut()`] and [`shortcut_random`] post-process any [`Path`].
 //!
-//! ## Planned scope
-//!
-//! ABIT*, EIT*, and more state spaces (SE(3), compound spaces).
-//!
-//! ## Status
-//!
-//! Pre-release; the API will change.
+//! Not yet implemented: ABIT*, EIT*, multi-level KPIECE, and the SE(3) and compound state
+//! spaces.
 //!
 //! Repository: <https://github.com/sunsided/sampling-planning>
 

@@ -1,6 +1,6 @@
 [package]
 name = "sampling-planning"
-description = "Motion planning with sampling-based planners: RRT, RRT*, RRT#, PRM, FMT*, BIT*, SST and KPIECE"
+description = "Sampling-based motion planning for no_std: RRT, RRT*, RRT-Connect, PRM, SPARS, FMT*, BIT*, AIT*, SST and KPIECE"
 version = "0.0.0"
 edition = "2024"
 rust-version = "1.85"
@@ -8,7 +8,7 @@ authors = ["Markus Mayer <widemeadows@gmail.com>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/sunsided/sampling-planning"
 readme = "README.md"
-keywords = ["motion-planning", "rrt", "robotics", "prm", "path-planning"]
+keywords = ["motion-planning", "rrt", "prm", "path-planning", "robotics"]
 categories = ["science::robotics", "algorithms", "no-std"]
 # Repository tooling stays out of the published crate.
 exclude = [

@@ -27,7 +27,7 @@ applyTo: "**/*.rs"
   inserted node. Planners must give identical runs with either structure; tests compare them.
 - Validity is three-valued; planners accept only `Validity::Valid` and treat `Unknown` like
   `Invalid`.
-- Public API changes go with a matching update to the README "Status" list and
+- Public API changes go with a matching update to the README "Features" list and
   `docs/design.md`.
 - Mermaid diagrams in doc comments must match the code they describe. Update them when the
   structure changes.

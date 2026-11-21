@@ -18,8 +18,7 @@ live in `roadmaps` until they need their own module.
 
 Shared infrastructure sits at the crate root: state spaces, samplers,
 validity checking, nearest-neighbor structures, steering, goals and the
-problem definition, plus path shortcutting. A module is created only when its
-first planner lands; `informed` does not exist yet.
+problem definition, plus path shortcutting.
 
 ## Traits
 
@@ -102,8 +101,8 @@ pub trait Sampler<S> {
 
 `&mut self` lets deterministic low-discrepancy samplers (Halton) and informed
 samplers (ellipsoid around the best path) keep state. The RNG is passed in,
-never owned, so one seeded RNG drives a whole planning run. Milestone 1 ships
-`UniformBox<N>`.
+never owned, so one seeded RNG drives a whole planning run. The crate ships
+`UniformBox<N>`, `UniformAngle` and `UniformSe2`.
 
 ### `ValidityChecker`
 
@@ -183,7 +182,7 @@ pub trait Steering<Sp: StateSpace> {
 }
 ```
 
-Milestone 1 ships `StraightLine { max_step }`: go toward the target, at most
+The crate ships `StraightLine { max_step }`: go toward the target, at most
 `max_step` far. Kinodynamic planners need steering that returns controls and
 a duration as well as the reached state; that becomes a separate
 `Propagator` trait in `kinodynamic`, not an extension of this one.
@@ -545,30 +544,19 @@ Float math (`sqrt`, `ln`, `powf`) is not in `core`. Decision: always use
 - Y. Li, Z. Littlefield and K. E. Bekris. *Asymptotically optimal
   sampling-based kinodynamic planning.* IJRR 35(5), 2016. (SST, SST*.)
 
-## Milestones
+## Not yet implemented
 
-1. **Foundations and RRT/RRT\*** (done): traits above, `Euclidean<N>`,
-   `UniformBox<N>`, `LinearScan`, `StraightLine`, `GoalRegion`, RRT and RRT*
-   with goal bias, 2D obstacle example, integration tests.
-2. **Roadmaps:** PRM, PRM*, lazy PRM, the k-d tree and k-nearest queries are
-   done.
-3. **Informed trees:** informed sampling (direct for Euclidean boxes,
-   rejection otherwise), RRT-Connect, RRT#, BIT* and AIT* are done; ABIT* and
-   EIT* are open.
-4. **FMT\*/BFMT\*:** done.
-5. **Kinodynamic:** `Propagator`, SST, SST* and single-level KPIECE are done;
-   multi-level KPIECE is open.
-6. **More spaces:** SO(2), SE(2), Dubins and Reeds-Shepp are done; SE(3)
-   and compound spaces are open.
+- The batch-informed planners ABIT* and EIT*.
+- Multi-level KPIECE.
+- The SE(3) and compound state spaces.
 
 ## Cross-crate needs
 
-- `robust-planning` will reuse the RRT machinery with reachable-set
-  (polyzonotope) edge checks. It plugs in through `ValidityChecker` and
-  relies on `Unknown` being rejected. It will likely also need steering that
-  returns controls (milestone 5 `Propagator`), and node data beyond a state
-  (the reachable set at the node). The tree may need a generic payload per
-  node for that; decide when `robust-planning` starts.
+- `robust-planning` builds on this crate: its `ReachChecker` plugs
+  reachable-set (polyzonotope) edge checks in through `ValidityChecker` and
+  relies on `Unknown` being rejected. Its Robust RRT* keeps a local tree,
+  since the trees here carry no per-node payload (the reachable set at the
+  node); a generic payload per node would let it reuse `RrtStar`.
 - No Cargo dependency on `polyzonotope` or `polyzonotope-reach` here.
 - No need for `search-core` yet: none of these traits is shared with another
   crate today.

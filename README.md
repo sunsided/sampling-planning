@@ -8,22 +8,42 @@
 [![License](https://img.shields.io/crates/l/sampling-planning)](https://github.com/sunsided/sampling-planning#license)
 [![unsafe forbidden](https://img.shields.io/badge/unsafe-forbidden-success.svg)](https://github.com/rust-secure-code/safety-dance/)
 
-Motion planning with sampling-based planners: RRT, RRT*, RRT#, RRT-Connect, PRM, PRM*, SPARS, SPARS2,
-FMT*, BFMT*, BIT*, AIT*, SST, SST* and KPIECE.
+Sampling-based motion planners for continuous configuration spaces: RRT, RRT*, RRT#, RRT-Connect,
+PRM, PRM*, SPARS, SPARS2, FMT*, BFMT*, BIT*, AIT*, SST, SST* and KPIECE, together with the state
+spaces, samplers, nearest-neighbor structures and path shortcutting they build on.
 
 This is a **motion planning** crate. It is named `sampling-planning` because the crate name `motion-planning` was already taken on crates.io.
 
-## Planned scope
+The planners share one small set of traits (a state space, a sampler and a validity checker, plus a
+steering function for the tree planners and a `Propagator` for the kinodynamic ones), so the
+collision checker and the space are written once and work with every planner. The crate is `#![no_std]` with `alloc`, forbids `unsafe`, takes its
+randomness from a caller-provided `rand_core` RNG and does its float math through `libm`: a seeded
+run gives the same path on every platform.
 
-Not implemented yet:
+## Who this is for
 
-- Batch-informed: ABIT*, EIT*
-- Kinodynamic: multi-level KPIECE
-- State spaces: SE(3), compound spaces
+- Robotics engineers who need a path for an arm, a mobile base or a car-like vehicle through a
+  continuous space with obstacles, and who bring their own collision checker.
+- Vehicles with a turning radius: the Dubins and Reeds-Shepp spaces plan along the actual
+  shortest car paths, not along straight lines that are fixed up afterwards.
+- Systems that can only be forward-simulated (no steering function, just "apply this control for
+  that long"): SST, SST* and KPIECE work over a `Propagator` instead.
+- Anyone comparing planners on the same problem; the bundled example runs eleven of them on one
+  world and draws the results.
+- Embedded and other `no_std` targets with an allocator, and test setups that need reproducible runs.
+- For discrete graphs and grids, [heuristic-search](https://github.com/sunsided/heuristic-search)
+  is the better fit; for many robots sharing one map, [mapf-search](https://github.com/sunsided/mapf-search);
+  for dynamics with bounded disturbances where the plan has to hold for every reachable state,
+  [robust-planning](https://github.com/sunsided/robust-planning).
 
-## Status
+## Installation
 
-Pre-release; the API will change. Implemented:
+```toml
+[dependencies]
+sampling-planning = "0.1"
+```
+
+## Features
 
 - Tree planners: RRT, RRT* (radius or k-nearest) with optional informed sampling (Informed RRT*, with direct
   prolate-hyperspheroid sampling in Euclidean spaces), RRT-Connect (bidirectional), RRT# (RRG with LPA*-style replanning).
@@ -48,9 +68,15 @@ Pre-release; the API will change. Implemented:
 
 Validity checks are three-valued (valid, invalid, unknown); planners treat unknown as invalid.
 
-See [docs/design.md](https://github.com/sunsided/sampling-planning/blob/main/docs/design.md) for the design and milestones, and run the example, which
-compares RRT, RRT-Connect, RRT*, Informed RRT*, RRT#, PRM*, SPARS, SPARS2, FMT*, BFMT* and BIT* on one
-world and draws their paths:
+Not yet implemented: the batch-informed ABIT* and EIT*, multi-level KPIECE, and the SE(3) and
+compound state spaces.
+
+## Usage
+
+See the [crate documentation](https://docs.rs/sampling-planning) for a complete RRT* example and
+[docs/design.md](https://github.com/sunsided/sampling-planning/blob/main/docs/design.md) for the
+design. The example compares RRT, RRT-Connect, RRT*, Informed RRT*, RRT#, PRM*, SPARS, SPARS2,
+FMT*, BFMT* and BIT* on one world and draws their paths:
 
 ```sh
 cargo run --release --example obstacles_2d
