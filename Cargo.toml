@@ -10,6 +10,19 @@ repository = "https://github.com/sunsided/sampling-planning"
 readme = "README.md"
 keywords = ["motion-planning", "rrt", "robotics", "prm", "path-planning"]
 categories = ["science::robotics", "algorithms", "no-std"]
+# Repository tooling stays out of the published crate.
+exclude = [
+    ".github/",
+    "scripts/",
+    ".pre-commit-config.yaml",
+    "Taskfile.dist.yaml",
+    "_typos.toml",
+    "clippy.toml",
+    "codecov.yml",
+    "deny.toml",
+    "release-plz.toml",
+    "rustfmt.toml",
+]
 
 [dependencies]
 libm = "0.2.16"

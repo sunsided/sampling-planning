@@ -1,5 +1,13 @@
 # sampling-planning: motion planning for Rust
 
+[![crates.io](https://img.shields.io/crates/v/sampling-planning.svg)](https://crates.io/crates/sampling-planning)
+[![docs.rs](https://img.shields.io/docsrs/sampling-planning)](https://docs.rs/sampling-planning)
+[![CI](https://github.com/sunsided/sampling-planning/actions/workflows/ci.yml/badge.svg)](https://github.com/sunsided/sampling-planning/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/sunsided/sampling-planning/graph/badge.svg)](https://codecov.io/gh/sunsided/sampling-planning)
+[![MSRV](https://img.shields.io/crates/msrv/sampling-planning)](https://crates.io/crates/sampling-planning)
+[![License](https://img.shields.io/crates/l/sampling-planning)](https://github.com/sunsided/sampling-planning#license)
+[![unsafe forbidden](https://img.shields.io/badge/unsafe-forbidden-success.svg)](https://github.com/rust-secure-code/safety-dance/)
+
 Motion planning with sampling-based planners: RRT, RRT*, RRT#, RRT-Connect, PRM, PRM*, SPARS, SPARS2,
 FMT*, BFMT*, BIT*, AIT*, SST, SST* and KPIECE.
 
@@ -40,7 +48,7 @@ Pre-release; the API will change. Implemented:
 
 Validity checks are three-valued (valid, invalid, unknown); planners treat unknown as invalid.
 
-See [docs/design.md](docs/design.md) for the design and milestones, and run the example, which
+See [docs/design.md](https://github.com/sunsided/sampling-planning/blob/main/docs/design.md) for the design and milestones, and run the example, which
 compares RRT, RRT-Connect, RRT*, Informed RRT*, RRT#, PRM*, SPARS, SPARS2, FMT*, BFMT* and BIT* on one
 world and draws their paths:
 
@@ -48,11 +56,28 @@ world and draws their paths:
 cargo run --release --example obstacles_2d
 ```
 
+## Minimum supported Rust version
+
+Rust 1.85 (edition 2024). The MSRV applies to the library; tests and benchmarks may need a
+newer toolchain. It may be raised in a minor release when a dependency or a language
+feature calls for it.
+
+## Contributing
+
+See [CONTRIBUTING.md](https://github.com/sunsided/sampling-planning/blob/main/CONTRIBUTING.md).
+
 ## License
 
 Licensed under either of
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT license ([LICENSE-MIT](LICENSE-MIT))
+- Apache License, Version 2.0 ([LICENSE-APACHE](https://github.com/sunsided/sampling-planning/blob/main/LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](https://github.com/sunsided/sampling-planning/blob/main/LICENSE-MIT))
 
 at your option.
+
+The example in [`examples/`](https://github.com/sunsided/sampling-planning/tree/main/examples) is public domain
+([CC0-1.0](https://github.com/sunsided/sampling-planning/blob/main/LICENSES/CC0-1.0.txt)), so you can copy it into anything.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion
+in this work by you, as defined in the Apache-2.0 license, shall be dual licensed as above,
+without any additional terms or conditions.
