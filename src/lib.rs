@@ -79,7 +79,7 @@
 //!   [`Kpiece`](kinodynamic::Kpiece) over a [`Propagator`](kinodynamic::Propagator) that
 //!   forward-simulates controls.
 //!
-//! [`shortcut`] and [`shortcut_random`] post-process any [`Path`].
+//! [`shortcut()`] and [`shortcut_random`] post-process any [`Path`].
 //!
 //! ## Planned scope
 //!

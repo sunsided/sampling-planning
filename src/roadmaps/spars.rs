@@ -129,7 +129,7 @@ impl SparsConfig {
 /// - Every sparse edge of a quality path is checked before anything is added, and the path is
 ///   skipped if one is invalid; OMPL adds them unchecked.
 /// - OMPL's randomized `reduceVertices` is replaced by the deterministic greedy
-///   [`shortcut`](crate::shortcut).
+///   [`shortcut`](crate::shortcut()).
 /// - Dense paths come from Dijkstra (ties by id) instead of A*; their lengths agree.
 /// - A dense node without a visible guard has no representative (OMPL leaves an unset value);
 ///   it is kept out of interface lists until a guard covers it, which the coverage criterion

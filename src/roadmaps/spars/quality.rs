@@ -116,7 +116,7 @@ where
     }
 
     /// Adds `states` as a chain of quality guards from guard `from` to guard `to`, after
-    /// dropping states the greedy [`shortcut`] skips (in place of OMPL's `reduceVertices`).
+    /// dropping states the greedy [`shortcut()`](crate::shortcut()) skips (in place of OMPL's `reduceVertices`).
     /// With at most one state, connects `from` and `to` directly and resets the failure
     /// counter. Every sparse edge is checked first; returns `false`, changing nothing, if one
     /// is invalid.
@@ -148,7 +148,7 @@ where
         true
     }
 
-    /// `states` with the states dropped that [`shortcut`] skips; keeps the first and last.
+    /// `states` with the states dropped that [`shortcut()`](crate::shortcut()) skips; keeps the first and last.
     fn reduce_vertices(&self, states: Vec<Sp::State>) -> Vec<Sp::State> {
         let cost = states
             .windows(2)

@@ -41,7 +41,7 @@ struct Half<S, N> {
 ///
 /// Finds feasible paths much faster than [`Rrt`](super::Rrt) in open spaces with narrow
 /// passages near the endpoints, but, like RRT, does not improve them; run
-/// [`shortcut`](crate::shortcut) on the result.
+/// [`shortcut`](crate::shortcut()) on the result.
 ///
 /// The goal tree is rooted at [`GoalRegion::center`](crate::GoalRegion::center), so the
 /// returned path ends there. Its edges are traveled toward the root, so they are checked in that
