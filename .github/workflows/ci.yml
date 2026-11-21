@@ -81,7 +81,7 @@ jobs:
         run: "! grep -rnoE --include='README.md' --exclude-dir=target --exclude-dir=.git --exclude-dir=review '(\\]\\(|src=\")[^)\"]*' . | grep -vE ':(\\]\\(|src=\")(https?://|#|mailto:)'"
       - name: Typos
         uses: crate-ci/typos@276087d9a4f06398b3e04825487805e2d7375888 # v1.52.2
-      # Version resolved via jsdelivr (docs/automation.md in the harden-rust skill).
+      # Exact version, resolved via jsdelivr; bump it by hand.
       - name: Mermaid diagrams render
         run: python3 scripts/lint-mermaid.py
         env:
