@@ -20,6 +20,8 @@ collision checker and the space are written once and work with every planner. Th
 randomness from a caller-provided `rand_core` RNG and does its float math through `libm`: a seeded
 run gives the same path on every platform.
 
+Part of the [planning and search crates](https://sunsided.github.io/planning-and-search/); see also this crate's [overview page](https://sunsided.github.io/planning-and-search/crates/sampling-planning/).
+
 ## Who this is for
 
 - Robotics engineers who need a path for an arm, a mobile base or a car-like vehicle through a
