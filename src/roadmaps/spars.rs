@@ -90,6 +90,17 @@ impl SparsConfig {
 /// cost at most about `stretch` times the optimum plus a term in `sparse_delta`, with far
 /// fewer nodes than the dense graph. [`Spars::query`] searches only the sparse graph.
 ///
+/// **Quality guards keep growing with the dense graph.** As in OMPL, `s_max` is the
+/// straight-line estimate `(d(x, v) + d(v, v')) / 2`, which does not see quality paths added
+/// earlier, so every new dense node whose dense path is short enough adds another one, and
+/// each new guard resets the failure counter. In a 10 x 10 world with two walls,
+/// `sparse_delta = 1` and `dense_delta = 0.1`, 8 000 samples give 74 quality guards,
+/// 20 000 give 2 612 and 32 000 about 12 000, and construction time grows from 0.2 s to
+/// 260 s (release build, [`KdTree`](crate::KdTree)); [`Spars2`] stays near 125 guards and
+/// below a second over the same range. Cap construction with
+/// `max_samples`, or use [`Spars2`] for large roadmaps.
+///
+/// [`Spars2`]: super::Spars2
 /// ```mermaid
 /// graph LR
 ///     Sample --> Dense["add to D, update representatives"]
