@@ -539,9 +539,14 @@ cost-to-go incrementally.
   lists are built lazily, on a state's first expansion in the batch (as
   OMPL); a radius query from `x` finds exactly the states whose query finds
   `x`, so this equals the symmetrized eager graph, which the `k`-nearest rule
-  still builds. Each batch still restarts the reverse search over every
-  state, so CPU time per batch grows with the stored states; budget AIT* by
-  batches or collision checks, not steps, and use `KdTree` or `VpTree`.
+  and spaces that are not `StateSpace::is_symmetric` still build. Lists carry
+  over to the next batch while the radius does not grow (`informed/rgg.rs`):
+  the new samples are queried at the batch start and appended to their older
+  neighbors' lists, and a carried list is narrowed to the new radius and the
+  live states on first use, with the predicate of a fresh query, so it equals
+  one. Each batch still restarts the reverse search over every state, so CPU
+  time per batch grows with the stored states; budget AIT* by batches or
+  collision checks, not steps, and use `KdTree` or `VpTree`.
 
 `EitStar` follows OMPL's `EITstar` (Strub; Strub and Gammell 2022, IJRR
 41(4), arXiv 2111.01877) without multi-query planning. It shares BIT*'s

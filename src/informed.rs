@@ -24,6 +24,7 @@ mod batch;
 mod bit_star;
 mod eit_star;
 mod queues;
+mod rgg;
 
 use core::fmt;
 
