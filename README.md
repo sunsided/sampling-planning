@@ -30,7 +30,7 @@ Part of the [planning and search crates](https://sunsided.github.io/planning-and
   shortest car paths, not along straight lines that are fixed up afterwards.
 - Systems that can only be forward-simulated (no steering function, just "apply this control for
   that long"): SST, SST* and KPIECE work over a `Propagator` instead.
-- Anyone comparing planners on the same problem; the bundled example runs eleven of them on one
+- Anyone comparing planners on the same problem; one bundled example runs eleven of them on one
   world and draws the results.
 - Embedded and other `no_std` targets with an allocator, and test setups that need reproducible runs.
 - For discrete graphs and grids, [heuristic-search](https://github.com/sunsided/heuristic-search)
@@ -51,18 +51,22 @@ sampling-planning = "0.1"
   prolate-hyperspheroid sampling in Euclidean spaces and, through a Loewner-order lower bound of the
   metric tensor, under configuration-dependent Riemannian metrics), RRT-Connect (bidirectional), RRT# (RRG with LPA*-style replanning). RRT, RRT* and
   RRT-Connect can retire vertices that keep failing to extend from their nearest-neighbor index.
-  With feature `parallel`, `grow_forest` grows several RRT* trees on threads and merges them.
+  With feature `parallel`, `grow_forest` grows several RRT* trees on threads and merges them
+  (each merged node is an RRT* insertion, so keep forests small with `LinearScan`).
   RRT* minimizes any additive cost objective, such as the hybrid risk-density objective over
   Gaussian uncertain obstacles.
 - Roadmaps: PRM (fixed radius or fixed k), PRM* (shrinking radius or `k ln n` nearest), lazy
   PRM, SPARS (sparse roadmap spanner over a dense PRM* graph), SPARS2 (without one);
   multi-query, with Dijkstra queries on a reusable roadmap, also through a shared reference with a
   reusable query workspace and, with feature `parallel`, in batches on several threads; with
-  feature `parallel` a roadmap is also built on several threads.
+  feature `parallel` a roadmap is also built on several threads. Shared queries on a lazy
+  roadmap re-check its unchecked edges every time, so many queries favor an eager roadmap.
 - Batch-informed planners: BIT* (radius or k-nearest, informed batches, pruning), ABIT*
   (inflated and truncated BIT* searches), AIT* (BIT*-style forward search guided by a lazy LPA*
   reverse search that is repaired on every invalid edge) and EIT* (effort-guided forward search
-  over a sparsely checked reverse search, few collision checks to a first solution).
+  over a sparsely checked reverse search, which spends fewer collision checks than AIT*). AIT*
+  and EIT* trade CPU time in their reverse searches for collision checks, which pays off when
+  checks are expensive.
 - Batch planners: FMT* (fast marching tree) and BFMT* (bidirectional, optimal or first-meeting
   termination).
 - Kinodynamic planners: SST and SST* over a `Propagator` (forward simulation) trait, with
@@ -83,15 +87,34 @@ threads (`ParallelChecker`).
 
 Not yet implemented: compound state spaces.
 
+## Cargo features
+
+- `std`: links `std`; no API of its own.
+- `parallel` (implies `std`): `ParallelChecker`, parallel PRM construction, `Prm::query_batch`
+  and `trees::grow_forest`, all on `std::thread::scope`.
+
+Without features the crate is `no_std` with `alloc`.
+
 ## Usage
 
 See the [crate documentation](https://docs.rs/sampling-planning) for a complete RRT* example and
 [docs/design.md](https://github.com/sunsided/sampling-planning/blob/main/docs/design.md) for the
-design. The example compares RRT, RRT-Connect, RRT*, Informed RRT*, RRT#, PRM*, SPARS, SPARS2,
-FMT*, BFMT* and BIT* on one world and draws their paths:
+design. The examples are small, self-contained scenarios:
+
+| Example | Scenario | Shows |
+| --- | --- | --- |
+| `obstacles_2d` | A 2D slalom between two walls | RRT, RRT-Connect, RRT*, Informed RRT*, RRT#, PRM*, SPARS, SPARS2, FMT*, BFMT* and BIT* side by side |
+| `car_parking` | Parallel parking between two parked cars | RRT-Connect over the Reeds-Shepp space, footprint checks, `shortcut` |
+| `warehouse_roadmap` | A disc robot answering pick requests among shelves | One PRM* roadmap for many queries, `QueryWorkspace`; with `parallel`, `ParallelChecker` and `Prm::query_batch` |
+| `arm_reach` | A two-link arm reaching under a shelf | BIT*, ABIT*, AIT* and EIT* in joint space on a collision-check budget |
+| `risk_aware_crossing` | A robot crossing a plaza past uncertain people | RRT* with the `RiskDensity` objective versus path length |
+| `unicycle_maze` | A differential-drive robot through an office | SST and single- and multi-level KPIECE over a `Propagator` |
+| `drone_window` | A drone flying through a window and landing at a heading | RRT* over SE(3); with `parallel`, `trees::grow_forest` |
 
 ```sh
-cargo run --release --example obstacles_2d
+cargo run --release --example car_parking
+cargo run --release --features parallel --example warehouse_roadmap
+cargo run --release --example arm_reach 4   # most examples take a seed
 ```
 
 ## Minimum supported Rust version
@@ -113,8 +136,8 @@ Licensed under either of
 
 at your option.
 
-The example in [`examples/`](https://github.com/sunsided/sampling-planning/tree/main/examples) is public domain
-([CC0-1.0](https://github.com/sunsided/sampling-planning/blob/main/LICENSES/CC0-1.0.txt)), so you can copy it into anything.
+The examples in [`examples/`](https://github.com/sunsided/sampling-planning/tree/main/examples) are public domain
+([CC0-1.0](https://github.com/sunsided/sampling-planning/blob/main/LICENSES/CC0-1.0.txt)), so you can copy them into anything.
 
 Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion
 in this work by you, as defined in the Apache-2.0 license, shall be dual licensed as above,
