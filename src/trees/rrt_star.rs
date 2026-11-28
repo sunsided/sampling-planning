@@ -268,7 +268,7 @@ where
 
     /// The objective's cost of reaching `to` from node `from` by a direct motion.
     fn cost_via(&self, from: usize, to: &Sp::State) -> f64 {
-        let tree = &self.growth.tree;
+        let tree = &self.growth.indexed.tree;
 
         tree.cost(from)
             + self
@@ -322,11 +322,11 @@ where
     /// Replaces `near` with the candidate parents and rewiring targets of the new node at
     /// `state`.
     fn neighbors(&self, state: &Sp::State, near: &mut Vec<usize>) {
-        let tree = &self.growth.tree;
+        let tree = &self.growth.indexed.tree;
 
         self.config.neighbors(
             &self.growth.problem.space,
-            &self.growth.nn,
+            &self.growth.indexed.nn,
             state,
             tree.len() + 1,
             |id| tree.state(id),
@@ -342,7 +342,7 @@ where
     /// Costs never increase, so the best path never gets worse.
     pub(super) fn absorb(&mut self, other: &Self) {
         let mut near = core::mem::take(&mut self.near);
-        let nodes = other.growth.tree.breadth_first();
+        let nodes = other.growth.indexed.tree.breadth_first();
         // Merged id of each node of `other`; both roots are the start.
         let mut merged: Vec<Option<usize>> = alloc::vec![None; nodes.len()];
         merged[0] = Some(0);
@@ -399,13 +399,13 @@ where
     /// valid.
     fn rewire(&mut self, id: usize, near: &[usize]) {
         for &node in near {
-            let tree = &self.growth.tree;
+            let tree = &self.growth.indexed.tree;
             let cost = self.cost_via(id, tree.state(node));
 
             if cost < tree.cost(node) && self.is_rewire_valid(id, node) {
                 let (space, objective) = (&self.growth.problem.space, &self.objective);
                 let edge_cost = |a: &Sp::State, b: &Sp::State| objective.motion_cost(space, a, b);
-                self.growth.tree.reparent(node, id, cost, edge_cost);
+                self.growth.indexed.tree.reparent(node, id, cost, edge_cost);
             }
         }
     }
@@ -413,7 +413,7 @@ where
     /// Whether the motion from node `from` to node `to` checks as valid.
     fn is_rewire_valid(&self, from: usize, to: usize) -> bool {
         self.growth
-            .is_motion_valid(from, self.growth.tree.state(to))
+            .is_motion_valid(from, self.growth.indexed.tree.state(to))
     }
 
     /// Runs `iterations` iterations.
@@ -432,14 +432,14 @@ where
     /// The number of tree nodes, including the root.
     #[must_use]
     pub fn node_count(&self) -> usize {
-        self.growth.tree.len()
+        self.growth.indexed.tree.len()
     }
 
     /// The number of vertices retired from the nearest-neighbor index; always zero unless
     /// [`RrtStar::with_retirement`] enabled retirement.
     #[must_use]
     pub const fn retired_count(&self) -> usize {
-        self.growth.retirement.retired()
+        self.growth.indexed.retirement.retired()
     }
 }
 
@@ -457,8 +457,11 @@ where
     /// rewired.
     #[must_use]
     pub fn with_retirement(mut self, failures: NonZeroUsize) -> Self {
-        let reached = self.growth.nn.clone();
-        self.growth.retirement.enable(failures, N::remove, reached);
+        let reached = self.growth.indexed.nn.clone();
+        self.growth
+            .indexed
+            .retirement
+            .enable(failures, N::remove, reached);
         self
     }
 }

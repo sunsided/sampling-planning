@@ -4,7 +4,7 @@ use core::num::NonZeroUsize;
 
 use rand_core::Rng;
 
-use super::{Error, retirement::Retirement, tree::Tree};
+use super::{Error, growth::IndexedTree};
 use crate::{
     LinearScan, NearestNeighbors, Path, Problem, RemovableNeighbors, Sampler, StateSpace, Steering,
     ValidityChecker,
@@ -27,17 +27,6 @@ impl Side {
             Self::Goal => Self::Start,
         }
     }
-}
-
-/// One tree with its nearest-neighbor index.
-#[derive(Clone)]
-struct Half<S, N> {
-    /// The tree, rooted at the start or the goal center.
-    tree: Tree<S>,
-    /// Index over the tree's nodes, by node id.
-    nn: N,
-    /// Removes vertices that keep failing to extend from `nn`; disabled by default.
-    retirement: Retirement<N>,
 }
 
 /// RRT-Connect: grows one tree from the start and one from the goal center, and after every
@@ -99,9 +88,9 @@ pub struct RrtConnect<Sp: StateSpace, Sa, C, St, N = LinearScan<<Sp as StateSpac
     /// The problem being solved.
     problem: Problem<Sp, Sa, C, St>,
     /// The tree rooted at the start.
-    start: Half<Sp::State, N>,
+    start: IndexedTree<Sp::State, N>,
     /// The tree rooted at the goal center.
-    goal: Half<Sp::State, N>,
+    goal: IndexedTree<Sp::State, N>,
     /// The tree that extends toward the next sample; alternates every iteration.
     active: Side,
     /// The first solution found, if any.
@@ -160,8 +149,8 @@ where
             });
 
         Ok(Self {
-            start: Half::rooted(problem.start.clone(), nn.clone()),
-            goal: Half::rooted(problem.goal.center().clone(), nn),
+            start: IndexedTree::rooted(problem.start.clone(), nn.clone()),
+            goal: IndexedTree::rooted(problem.goal.center().clone(), nn),
             problem,
             active: Side::Start,
             solution,
@@ -227,7 +216,7 @@ where
     }
 
     /// The tree on `side`.
-    const fn half(&self, side: Side) -> &Half<Sp::State, N> {
+    const fn half(&self, side: Side) -> &IndexedTree<Sp::State, N> {
         match side {
             Side::Start => &self.start,
             Side::Goal => &self.goal,
@@ -258,11 +247,7 @@ where
         };
         let id = valid.then(|| {
             let cost = half.tree.cost(from) + space.distance(half.tree.state(from), &new);
-            let id = half.tree.add(new.clone(), from, cost);
-            half.retirement.note_added::<Sp>(id, new.clone());
-            half.nn.insert(id, new.clone());
-
-            id
+            half.add(new.clone(), from, cost)
         });
 
         half.record_extension(space, &self.problem.steering, from, &new, valid);
@@ -386,51 +371,6 @@ where
         self.start.retirement.enable(failures, N::remove, start);
         self.goal.retirement.enable(failures, N::remove, goal);
         self
-    }
-}
-
-impl<S: Clone, N> Half<S, N> {
-    /// Feeds vertex retirement with the extension from `from` to `to`, like
-    /// `Growth::record_extension`.
-    fn record_extension<Sp, St>(
-        &mut self,
-        space: &Sp,
-        steering: &St,
-        from: usize,
-        to: &S,
-        valid: bool,
-    ) where
-        Sp: StateSpace<State = S>,
-        St: Steering<Sp>,
-        N: NearestNeighbors<Sp>,
-    {
-        if !self.retirement.is_enabled() {
-            return;
-        }
-
-        let from_state = self.tree.state(from);
-        let progressed = valid && space.distance(from_state, to) > 0.0;
-        self.retirement.record(&mut self.nn, from, progressed);
-
-        if let Some(successors) = steering.successors(space, from_state) {
-            self.retirement
-                .retire_if_exhausted(&mut self.nn, space, from, &successors);
-        }
-    }
-
-    /// A tree holding only `root`, indexed as node `0` in the empty index `nn`.
-    fn rooted<Sp>(root: S, mut nn: N) -> Self
-    where
-        Sp: StateSpace<State = S>,
-        N: NearestNeighbors<Sp>,
-    {
-        nn.insert(0, root.clone());
-
-        Self {
-            tree: Tree::new(root),
-            nn,
-            retirement: Retirement::disabled(),
-        }
     }
 }
 

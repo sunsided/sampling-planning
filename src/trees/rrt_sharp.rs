@@ -4,7 +4,11 @@ use alloc::{collections::BinaryHeap, vec::Vec};
 
 use rand_core::Rng;
 
-use super::{Error, RrtStarConfig, targets::draw_target};
+use super::{
+    Error, RrtStarConfig,
+    growth::{is_extension_valid, validate},
+    targets::draw_target,
+};
 use crate::graph::Entry;
 use crate::{
     LinearScan, NearestNeighbors, Path, Problem, Sampler, StateSpace, Steering, ValidityChecker,
@@ -168,15 +172,7 @@ where
         mut nn: N,
     ) -> Result<Self, Error> {
         config.validate()?;
-
-        if !(0.0..=1.0).contains(&config.goal_bias) {
-            return Err(Error::GoalBiasOutOfRange);
-        }
-
-        let validity = problem.checker.check_state(&problem.start);
-        if !validity.is_valid() {
-            return Err(Error::InvalidStart(validity));
-        }
+        validate(&problem, config.goal_bias)?;
 
         let start = problem.start.clone();
         let in_goal = problem.goal.contains(&problem.space, &start);
@@ -233,14 +229,7 @@ where
         let from = &self.vertices[nearest].state;
         let new = self.problem.steering.steer(space, from, &target);
 
-        // A zero-length step (the target is already a vertex) would only add a duplicate.
-        (space.distance(from, &new) > 0.0
-            && self
-                .problem
-                .checker
-                .check_motion(space, from, &new)
-                .is_valid())
-        .then_some((nearest, new))
+        is_extension_valid(space, &self.problem.checker, from, &new).then_some((nearest, new))
     }
 
     /// The informed-set bound `c_best + tolerance`, or `None` when informed sampling is off or
