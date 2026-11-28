@@ -64,7 +64,7 @@ fn planner(config: AitStarConfig) -> Planner {
 /// The exact cost-to-go of every node over the batch graph with `c_hat` costs, skipping the
 /// motions known to be invalid: Dijkstra from the goal states along reversed motions.
 fn dijkstra_to_goal(planner: &Planner) -> Vec<f64> {
-    let nodes = &planner.nodes;
+    let nodes = &planner.graph.nodes;
     let mut cost = vec![f64::INFINITY; nodes.len()];
     let mut heap = BinaryHeap::new();
 
@@ -84,9 +84,12 @@ fn dijkstra_to_goal(planner: &Planner) -> Vec<f64> {
         }
 
         for &x in &nodes[y].adjacent {
-            let through = c + planner.space.distance(&nodes[x].state, &nodes[y].state);
+            let through = c + planner
+                .graph
+                .space
+                .distance(&nodes[x].state, &nodes[y].state);
 
-            if !nodes[x].invalid.contains(&y) && through < cost[x] {
+            if !nodes[x].ext.invalid.contains(&y) && through < cost[x] {
                 cost[x] = through;
                 heap.push(Entry {
                     cost: through,
@@ -104,12 +107,12 @@ fn dijkstra_to_goal(planner: &Planner) -> Vec<f64> {
 fn assert_matches(planner: &Planner, reference: &[f64], settled: impl Fn(usize) -> bool) -> usize {
     let mut compared = 0;
 
-    for (id, node) in planner.nodes.iter().enumerate() {
+    for (id, node) in planner.graph.nodes.iter().enumerate() {
         if node.kind == Kind::Pruned || !settled(id) {
             continue;
         }
 
-        let (actual, expected) = (node.h_con, reference[id]);
+        let (actual, expected) = (node.ext.h_con, reference[id]);
         let equal = actual.total_cmp(&expected).is_eq() || (actual - expected).abs() < 1e-9;
         assert!(equal, "node {id}: h_con {actual} vs Dijkstra {expected}");
         compared += 1;
@@ -120,10 +123,10 @@ fn assert_matches(planner: &Planner, reference: &[f64], settled: impl Fn(usize) 
 
 /// Asserts that the batch graph is symmetric and holds every forward-tree edge.
 fn assert_graph_is_symmetric_with_tree_edges(planner: &Planner) {
-    for (id, node) in planner.nodes.iter().enumerate() {
+    for (id, node) in planner.graph.nodes.iter().enumerate() {
         for &other in &node.adjacent {
             assert!(
-                planner.nodes[other].adjacent.contains(&id),
+                planner.graph.nodes[other].adjacent.contains(&id),
                 "{id} - {other}"
             );
         }
@@ -141,8 +144,8 @@ fn assert_graph_is_symmetric_with_tree_edges(planner: &Planner) {
 /// states have the exact cost-to-go.
 fn assert_reverse_search_is_exact(planner: &mut Planner) {
     // Neighbor lists are built on first use; the reference needs all of them.
-    for id in 0..planner.nodes.len() {
-        planner.ensure_adjacent(id);
+    for id in 0..planner.graph.nodes.len() {
+        planner.graph.ensure_adjacent(id);
     }
 
     assert_graph_is_symmetric_with_tree_edges(planner);
@@ -152,7 +155,8 @@ fn assert_reverse_search_is_exact(planner: &mut Planner) {
         .peek_state()
         .map_or(f64::INFINITY, |entry| entry.key);
     let lazy = assert_matches(planner, &reference, |x| {
-        planner.is_consistent(x) && planner.nodes[x].h_con + planner.nodes[x].g_hat < top
+        planner.is_consistent(x)
+            && planner.graph.nodes[x].ext.h_con + planner.graph.nodes[x].g_hat < top
     });
     assert!(lazy > 0, "the lazy search settled some states");
 
@@ -161,6 +165,7 @@ fn assert_reverse_search_is_exact(planner: &mut Planner) {
     }
 
     let live = planner
+        .graph
         .nodes
         .iter()
         .filter(|node| node.kind != Kind::Pruned)
@@ -176,15 +181,20 @@ fn step_until_invalid_edges(planner: &mut Planner, wanted: usize) -> bool {
     let mut rose = false;
 
     for _ in 0..5000 {
-        let before: Vec<f64> = planner.nodes.iter().map(|node| node.h_con).collect();
+        let before: Vec<f64> = planner
+            .graph
+            .nodes
+            .iter()
+            .map(|node| node.ext.h_con)
+            .collect();
         let batch = planner.batch_count();
         planner.step(&mut rng);
 
         rose |= planner.batch_count() == batch
             && before
                 .iter()
-                .zip(&planner.nodes)
-                .any(|(&old, node)| old.is_finite() && node.h_con > old);
+                .zip(&planner.graph.nodes)
+                .any(|(&old, node)| old.is_finite() && node.ext.h_con > old);
 
         if invalid_edge_count(planner) >= wanted {
             break;
@@ -196,7 +206,12 @@ fn step_until_invalid_edges(planner: &mut Planner, wanted: usize) -> bool {
 
 /// The number of motions recorded as invalid.
 fn invalid_edge_count(planner: &Planner) -> usize {
-    planner.nodes.iter().map(|node| node.invalid.len()).sum()
+    planner
+        .graph
+        .nodes
+        .iter()
+        .map(|node| node.ext.invalid.len())
+        .sum()
 }
 
 #[test]
@@ -226,7 +241,13 @@ fn reverse_search_matches_dijkstra_in_later_batches() {
             planner.best_path().is_some(),
             "solved before the fourth batch"
         );
-        assert!(planner.nodes.iter().any(|node| node.kind == Kind::Pruned));
+        assert!(
+            planner
+                .graph
+                .nodes
+                .iter()
+                .any(|node| node.kind == Kind::Pruned)
+        );
         assert!(invalid_edge_count(&planner) > 0);
         assert_reverse_search_is_exact(&mut planner);
     }

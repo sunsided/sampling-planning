@@ -21,6 +21,7 @@
 mod abit_star;
 mod ait_star;
 mod batch;
+mod batch_graph;
 mod bit_star;
 mod eit_star;
 mod queues;

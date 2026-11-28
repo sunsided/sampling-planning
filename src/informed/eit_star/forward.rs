@@ -15,13 +15,13 @@ where
     /// Queues the forward edges from vertex `vertex` to its neighbors, except `skip` and
     /// pruned or known-invalid ones.
     pub(super) fn expand_forward(&mut self, vertex: usize, skip: Option<usize>) {
-        self.ensure_adjacent(vertex);
+        self.graph.ensure_adjacent(vertex);
 
-        for index in 0..self.nodes[vertex].adjacent.len() {
-            let target = self.nodes[vertex].adjacent[index];
+        for index in 0..self.graph.nodes[vertex].adjacent.len() {
+            let target = self.graph.nodes[vertex].adjacent[index];
 
             if Some(target) != skip
-                && self.nodes[target].kind != Kind::Pruned
+                && self.graph.nodes[target].kind != Kind::Pruned
                 && !self.checks.invalid.contains(&(vertex, target))
             {
                 self.queue_forward(vertex, target);
@@ -31,10 +31,12 @@ where
 
     /// The keys of the forward edge from `from` to `to`.
     pub(super) fn forward_key(&self, from: usize, to: usize) -> ForwardKey {
-        let bound = self.nodes[from].g + self.cost_estimate(from, to) + self.nodes[to].h;
+        let bound = self.graph.nodes[from].g
+            + self.graph.cost_estimate(from, to)
+            + self.graph.nodes[to].ext.h;
         let effort = self
             .remaining_checks(from, to)
-            .saturating_add(self.nodes[to].effort);
+            .saturating_add(self.graph.nodes[to].ext.effort);
 
         ForwardKey { bound, effort }
     }
@@ -58,7 +60,7 @@ where
         let key = self.forward_key(from, to);
 
         if self.forward_queue.insert((from, to), key) {
-            self.nodes[to].incoming.push(from);
+            self.graph.nodes[to].ext.incoming.push(from);
             self.open_targets += usize::from(!self.is_closed(to));
         }
     }
@@ -66,7 +68,10 @@ where
     /// Removes the forward edge from `from` to `to` from the queue.
     fn dequeue_forward(&mut self, from: usize, to: usize) {
         if self.forward_queue.remove((from, to)).is_some() {
-            self.nodes[to].incoming.retain(|&source| source != from);
+            self.graph.nodes[to]
+                .ext
+                .incoming
+                .retain(|&source| source != from);
             self.open_targets -= usize::from(!self.is_closed(to));
         }
     }
@@ -76,8 +81,8 @@ where
         self.forward_queue.clear();
         self.open_targets = 0;
 
-        for node in &mut self.nodes {
-            node.incoming.clear();
+        for node in &mut self.graph.nodes {
+            node.ext.incoming.clear();
         }
     }
 
@@ -91,18 +96,18 @@ where
 
     /// Re-keys the queued forward edges into `to`, after its cost-to-go or effort changed.
     pub(super) fn refresh_forward_into(&mut self, to: usize) {
-        for index in 0..self.nodes[to].incoming.len() {
-            let from = self.nodes[to].incoming[index];
+        for index in 0..self.graph.nodes[to].ext.incoming.len() {
+            let from = self.graph.nodes[to].ext.incoming[index];
             self.refresh_forward(from, to);
         }
     }
 
     /// Re-keys the queued forward edges out of `from`, after its cost-to-come changed.
     fn refresh_forward_from(&mut self, from: usize) {
-        self.ensure_adjacent(from);
+        self.graph.ensure_adjacent(from);
 
-        for index in 0..self.nodes[from].adjacent.len() {
-            let to = self.nodes[from].adjacent[index];
+        for index in 0..self.graph.nodes[from].adjacent.len() {
+            let to = self.graph.nodes[from].adjacent[index];
             self.refresh_forward(from, to);
         }
     }
@@ -119,7 +124,7 @@ where
     /// Whether the forward queue holds an edge that could still beat the solution (OMPL's
     /// `continueForwardSearch`).
     pub(super) fn should_continue_forward(&self) -> bool {
-        !self.forward_queue.is_empty() && self.forward_lower_bound() < self.best_cost
+        !self.forward_queue.is_empty() && self.forward_lower_bound() < self.graph.best_cost
     }
 
     /// Processes the next forward edge (OMPL's `iterateForwardSearch`). Returns whether the
@@ -131,16 +136,16 @@ where
 
         self.dequeue_forward(from, to);
 
-        if self.nodes[to].parent == Some(from) {
-            if !self.nodes[to].in_goal() {
+        if self.graph.nodes[to].parent == Some(from) {
+            if !self.graph.nodes[to].in_goal() {
                 self.expand_forward(to, None);
             }
 
             return false;
         }
 
-        let estimate = self.nodes[from].g + self.cost_estimate(from, to);
-        if estimate >= self.nodes[to].g {
+        let estimate = self.graph.nodes[from].g + self.graph.cost_estimate(from, to);
+        if estimate >= self.graph.nodes[to].g {
             return false;
         }
 
@@ -150,7 +155,7 @@ where
         }
 
         // With c = c_hat for a valid edge, the checked cost is the estimate.
-        if estimate + self.nodes[to].h >= self.best_cost {
+        if estimate + self.graph.nodes[to].ext.h >= self.graph.best_cost {
             return false;
         }
 
@@ -171,49 +176,43 @@ where
     /// Makes `from` the forward parent of `to` with cost `g`, updates the costs below `to` and
     /// the solution, and expands `to` unless it is a goal.
     fn connect(&mut self, from: usize, to: usize, g: f64) {
-        if let Some(old) = self.nodes[to].parent {
-            self.nodes[old].children.retain(|&child| child != to);
+        if let Some(old) = self.graph.nodes[to].parent {
+            self.graph.nodes[old].children.retain(|&child| child != to);
         }
 
-        let was_sample = self.nodes[to].kind == Kind::Sample;
-        let node = &mut self.nodes[to];
+        let was_sample = self.graph.nodes[to].kind == Kind::Sample;
+        let node = &mut self.graph.nodes[to];
         node.parent = Some(from);
         node.g = g;
         node.kind = Kind::Vertex;
-        self.nodes[from].children.push(to);
+        self.graph.nodes[from].children.push(to);
         self.propagate_costs(to);
 
-        if self.nodes[to].in_goal() {
+        if self.graph.nodes[to].in_goal() {
             if was_sample {
-                self.solutions.push(to);
+                self.graph.solutions.push(to);
             }
         } else {
             self.expand_forward(to, Some(from));
         }
 
-        self.update_best_cost();
+        self.graph.update_best_cost();
     }
 
     /// Recomputes the costs of all descendants of `x` from their parents' costs.
     fn propagate_costs(&mut self, x: usize) {
-        let mut stack = self.nodes[x].children.clone();
+        let mut stack = self.graph.nodes[x].children.clone();
 
         self.refresh_forward_from(x);
 
         while let Some(child) = stack.pop() {
-            let parent = self.nodes[child].parent.expect("a child has a parent");
-            self.nodes[child].g = self.nodes[parent].g + self.cost_estimate(parent, child);
+            let parent = self.graph.nodes[child]
+                .parent
+                .expect("a child has a parent");
+            self.graph.nodes[child].g =
+                self.graph.nodes[parent].g + self.graph.cost_estimate(parent, child);
             self.refresh_forward_from(child);
-            stack.extend_from_slice(&self.nodes[child].children);
+            stack.extend_from_slice(&self.graph.nodes[child].children);
         }
-    }
-
-    /// Sets the solution cost to that of the cheapest goal vertex.
-    fn update_best_cost(&mut self) {
-        self.best_cost = self
-            .solutions
-            .iter()
-            .map(|&id| self.nodes[id].g)
-            .fold(f64::INFINITY, f64::min);
     }
 }

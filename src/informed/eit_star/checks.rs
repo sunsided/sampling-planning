@@ -17,7 +17,7 @@ where
     /// The number of checks a full-resolution check of the edge between `a` and `b` takes:
     /// `ceil(d / resolution)`, at least one.
     pub(super) fn full_checks(&self, a: usize, b: usize) -> usize {
-        let steps = libm::ceil(self.cost_estimate(a, b) / self.config.resolution);
+        let steps = libm::ceil(self.graph.cost_estimate(a, b) / self.config.resolution);
 
         if steps.is_nan() || steps < 1.0 {
             1
@@ -81,11 +81,13 @@ where
             }
 
             let t = count_to_f64(index) / count_to_f64(segments);
-            let state = self
-                .space
-                .interpolate(&self.nodes[from].state, &self.nodes[to].state, t);
+            let state = self.graph.space.interpolate(
+                &self.graph.nodes[from].state,
+                &self.graph.nodes[to].state,
+                t,
+            );
 
-            if !self.checker.check_state(&state).is_valid() {
+            if !self.graph.checker.check_state(&state).is_valid() {
                 self.checks.invalid.insert((from, to));
                 self.checks.invalid.insert((to, from));
                 return false;
@@ -109,8 +111,13 @@ where
         }
 
         let valid = self
+            .graph
             .checker
-            .check_motion(&self.space, &self.nodes[from].state, &self.nodes[to].state)
+            .check_motion(
+                &self.graph.space,
+                &self.graph.nodes[from].state,
+                &self.graph.nodes[to].state,
+            )
             .is_valid();
         let record = if valid {
             &mut self.checks.valid
@@ -223,10 +230,10 @@ mod tests {
         // Three sparse checks on a 0.25 edge are cut to two points, which do not nest.
         let mut short = eit(Spot::new(5.0, 0.1), 0.25, 3);
         assert!(short.could_be_valid(0, 1));
-        let checked = short.checker.checks.get();
+        let checked = short.graph.checker.checks.get();
 
         assert!(short.could_be_valid(0, 1));
-        assert_eq!(short.checker.checks.get(), checked);
+        assert_eq!(short.graph.checker.checks.get(), checked);
     }
 
     #[test]

@@ -10,11 +10,12 @@ use alloc::{
     vec::Vec,
 };
 
+use core::fmt;
+
 use rand_core::Rng;
 
-use super::batch::{Informed, Neighborhood};
+use super::batch_graph::{BatchGraph, Kind, START};
 use super::queues::EdgeEntry;
-use super::rgg::{NeighborCache, merge_sorted};
 use super::{BitStarConfig, Error};
 use crate::{GoalRegion, LinearScan, NearestNeighbors, Path, Sampler, StateSpace, ValidityChecker};
 use queue::ForwardQueue;
@@ -79,42 +80,9 @@ impl EitStarConfig {
     }
 }
 
-/// What a stored state currently is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Kind {
-    /// A forward-tree vertex.
-    Vertex,
-    /// A sample not connected to the forward tree.
-    Sample,
-    /// Pruned for good: it cannot improve the solution.
-    Pruned,
-}
-
-/// One stored state with its forward-tree and reverse-search data.
+/// EIT*'s reverse-search values of one stored state.
 #[derive(Debug, Clone)]
-struct Node<S> {
-    /// The state.
-    state: S,
-    /// What the state currently is.
-    kind: Kind,
-    /// The forward cost-to-come through the tree; infinite for samples.
-    g: f64,
-    /// The geometric cost-to-come estimate `d(start, x)`.
-    g_hat: f64,
-    /// The geometric cost-to-go estimate `max(0, d(x, goal center) - tolerance)`.
-    h_hat: f64,
-    /// The forward-tree parent; `None` for the start and samples.
-    parent: Option<usize>,
-    /// The forward-tree children.
-    children: Vec<usize>,
-    /// The batch graph's neighbors, by id, sorted. Valid while `adjacent_batch` is the
-    /// current batch; see [`EitStar::ensure_adjacent`].
-    adjacent: Vec<usize>,
-    /// The batch whose graph `adjacent` holds; `0` before the first batch.
-    adjacent_batch: usize,
-    /// The forward-tree parent and children at the start of the batch, which join the
-    /// lazily built neighbor list.
-    tree_links: Vec<usize>,
+struct EitExt {
     /// The reverse search's cost-to-go over the batch graph with sparsely checked edges;
     /// infinite until reached. Admissible for the current graph only.
     h: f64,
@@ -129,15 +97,15 @@ struct Node<S> {
     incoming: Vec<usize>,
 }
 
-impl<S> Node<S> {
-    /// The admissible solution cost through this state, `g_hat + h_hat`.
-    fn f_hat(&self) -> f64 {
-        self.g_hat + self.h_hat
-    }
-
-    /// Whether the state lies in the goal region.
-    fn in_goal(&self) -> bool {
-        self.h_hat <= 0.0
+impl Default for EitExt {
+    fn default() -> Self {
+        Self {
+            h: f64::INFINITY,
+            effort: usize::MAX,
+            reverse_parent: None,
+            closed_tag: 0,
+            incoming: Vec::new(),
+        }
     }
 }
 
@@ -152,9 +120,6 @@ struct EdgeChecks {
     /// after a state on the edge failed.
     invalid: BTreeSet<(usize, usize)>,
 }
-
-/// The id of the start state.
-const START: usize = 0;
 
 /// EIT*: effort informed trees (Strub and Gammell 2022, "AIT* and EIT*: Asymmetric
 /// bidirectional sampling-based path planning", IJRR 41(4), arXiv 2111.01877).
@@ -237,48 +202,47 @@ const START: usize = 0;
 ///
 /// assert!(eit.best_path().expect("free space").cost < 11.0);
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct EitStar<Sp: StateSpace, Sa, C, N = LinearScan<<Sp as StateSpace>::State>> {
-    /// The configuration space.
-    space: Sp,
-    /// Draws the batches.
-    sampler: Sa,
-    /// Decides which states and motions are allowed.
-    checker: C,
-    /// The start state; node `0`.
-    start: Sp::State,
-    /// Where the path has to end.
-    goal: GoalRegion<Sp::State>,
+    /// The problem, the stored states with the forward tree, and the batch graph; holds
+    /// `config.bit`.
+    graph: BatchGraph<Sp, Sa, C, N, EitExt>,
     /// The validated settings.
     config: EitStarConfig,
-    /// All stored states, by node id; node `0` is the start.
-    nodes: Vec<Node<Sp::State>>,
-    /// An empty index, cloned for every batch.
-    prototype: N,
-    /// Index over the vertices and samples of the current batch.
-    nn: N,
     /// The forward queue: directed edges `(vertex, target)` with their keys.
     forward_queue: ForwardQueue,
     /// The number of queued forward edges whose target the reverse search has not closed.
     open_targets: usize,
     /// The reverse queue; `from` is the state closer to the goal.
     reverse_queue: BinaryHeap<EdgeEntry>,
-    /// Identifies the running reverse search; see [`Node::closed_tag`].
+    /// Identifies the running reverse search; see [`EitExt::closed_tag`].
     reverse_tag: usize,
     /// The number of states the reverse search checks per edge now.
     sparse_checks: usize,
     /// Results of edge checks, kept across batches.
     checks: EdgeChecks,
-    /// The forward vertices in the goal region.
-    solutions: Vec<usize>,
-    /// The cost of the best solution; infinite until one is found.
-    best_cost: f64,
-    /// The neighbor rule of the current batch.
-    neighborhood: Neighborhood,
-    /// The number of batches started.
-    batches: usize,
-    /// The radius neighbor lists carried across batches.
-    neighbor_cache: NeighborCache,
+}
+
+impl<Sp, Sa, C, N> fmt::Debug for EitStar<Sp, Sa, C, N>
+where
+    Sp: StateSpace + fmt::Debug,
+    Sp::State: fmt::Debug,
+    Sa: fmt::Debug,
+    C: fmt::Debug,
+    N: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EitStar")
+            .field("graph", &self.graph)
+            .field("config", &self.config)
+            .field("forward_queue", &self.forward_queue)
+            .field("open_targets", &self.open_targets)
+            .field("reverse_queue", &self.reverse_queue)
+            .field("reverse_tag", &self.reverse_tag)
+            .field("sparse_checks", &self.sparse_checks)
+            .field("checks", &self.checks)
+            .finish()
+    }
 }
 
 impl<Sp, Sa, C> EitStar<Sp, Sa, C>
@@ -345,81 +309,21 @@ where
         config: EitStarConfig,
         nn: N,
     ) -> Result<Self, Error> {
+        // The batch settings are checked first, as `BatchGraph::new` would, so that a bad
+        // radius is an error even when the effort settings would panic.
         config.bit.validate()?;
         config.assert_effort();
 
-        let validity = checker.check_state(&start);
-        if !validity.is_valid() {
-            return Err(Error::InvalidStart(validity));
-        }
-
-        let mut planner = Self {
-            space,
-            sampler,
-            checker,
-            start: start.clone(),
-            goal,
+        Ok(Self {
+            graph: BatchGraph::new(space, sampler, checker, start, goal, config.bit, nn)?,
             config,
-            nodes: Vec::new(),
-            nn: nn.clone(),
-            prototype: nn,
             forward_queue: ForwardQueue::default(),
             open_targets: 0,
             reverse_queue: BinaryHeap::new(),
             reverse_tag: 0,
             sparse_checks: config.initial_sparse_checks,
             checks: EdgeChecks::default(),
-            solutions: Vec::new(),
-            best_cost: f64::INFINITY,
-            neighborhood: Neighborhood::Radius(0.0),
-            batches: 0,
-            neighbor_cache: NeighborCache::default(),
-        };
-        planner.plant_root(start);
-
-        Ok(planner)
-    }
-
-    /// Stores the start as vertex `0` and the goal center as the first sample, if it is valid.
-    fn plant_root(&mut self, start: Sp::State) {
-        let root = self.push_node(start, Kind::Vertex);
-        self.nodes[root].g = 0.0;
-
-        if self.nodes[root].in_goal() {
-            self.solutions.push(root);
-            self.best_cost = 0.0;
-        }
-
-        let center = self.goal.center().clone();
-        if self.checker.check_state(&center).is_valid() {
-            self.push_node(center, Kind::Sample);
-        }
-    }
-
-    /// Stores a new state of the given kind with its heuristics and returns its id.
-    fn push_node(&mut self, state: Sp::State, kind: Kind) -> usize {
-        let id = self.nodes.len();
-        let center_distance = self.space.distance(&state, self.goal.center());
-
-        self.nodes.push(Node {
-            g_hat: self.space.distance(&self.start, &state),
-            h_hat: (center_distance - self.goal.tolerance()).max(0.0),
-            g: f64::INFINITY,
-            state,
-            kind,
-            parent: None,
-            children: Vec::new(),
-            adjacent: Vec::new(),
-            adjacent_batch: 0,
-            tree_links: Vec::new(),
-            h: f64::INFINITY,
-            effort: usize::MAX,
-            reverse_parent: None,
-            closed_tag: 0,
-            incoming: Vec::new(),
-        });
-
-        id
+        })
     }
 
     /// Runs one iteration: advances the reverse search if the forward search needs it, else
@@ -447,341 +351,46 @@ where
     /// Prunes, samples a batch, rebuilds the graph and restarts both searches (OMPL's
     /// `improveApproximation`).
     fn start_batch<R: Rng + ?Sized>(&mut self, rng: &mut R) {
-        self.batches += 1;
-
-        if self.best_cost.is_finite() {
-            self.prune();
-        }
-
-        let first_new = self.nodes.len();
-        self.sample_batch(rng);
-        self.reindex();
-        self.build_graph(first_new);
+        self.graph.next_batch(rng);
         self.sparse_checks = self.config.initial_sparse_checks;
         self.clear_forward_queue();
         self.restart_reverse_search();
         self.expand_forward(START, None);
     }
 
-    /// Removes the samples and vertices that cannot improve the solution, as BIT*'s
-    /// Algorithm 3; vertices that still could become samples again.
-    fn prune(&mut self) {
-        let c = self.best_cost;
-
-        for node in &mut self.nodes {
-            if node.kind == Kind::Sample && node.f_hat() >= c {
-                node.kind = Kind::Pruned;
-            }
-        }
-
-        let mut vertices: Vec<usize> = (0..self.nodes.len())
-            .filter(|&id| self.nodes[id].kind == Kind::Vertex)
-            .collect();
-        vertices.sort_by(|&a, &b| self.nodes[a].g.total_cmp(&self.nodes[b].g).then(a.cmp(&b)));
-
-        // Rounding can lift the solution's own branch above `c` (a goal vertex on the
-        // region's rim, in line with the start, gets `h_hat(start) > c`); never cut it.
-        let mut on_solution = alloc::vec![false; self.nodes.len()];
-        let mut current = self.best_solution();
-        while let Some(id) = current {
-            on_solution[id] = true;
-            current = self.nodes[id].parent;
-        }
-
-        for v in vertices {
-            let node = &self.nodes[v];
-            if node.kind == Kind::Vertex
-                && !on_solution[v]
-                && (node.f_hat() > c || node.g + node.h_hat > c)
-            {
-                self.disconnect(v);
-            }
-        }
-
-        // Children of a pruned vertex cost more than the solution too, so the sweep above
-        // removed them as well; this keeps the tree whole should rounding disagree.
-        for v in 1..self.nodes.len() {
-            if self.nodes[v].kind == Kind::Vertex && self.nodes[v].parent.is_none() {
-                self.disconnect(v);
-            }
-        }
-
-        self.solutions
-            .retain(|&id| self.nodes[id].kind == Kind::Vertex);
-    }
-
-    /// Removes vertex `v` from the forward tree; it becomes a sample if it could still improve
-    /// the solution and is pruned otherwise.
-    fn disconnect(&mut self, v: usize) {
-        if let Some(parent) = self.nodes[v].parent.take() {
-            self.nodes[parent].children.retain(|&child| child != v);
-        }
-
-        let recycle = self.nodes[v].f_hat() < self.best_cost;
-        let node = &mut self.nodes[v];
-        node.kind = if recycle { Kind::Sample } else { Kind::Pruned };
-        node.g = f64::INFINITY;
-
-        for child in core::mem::take(&mut node.children) {
-            self.nodes[child].parent = None;
-        }
-    }
-
-    /// Draws up to `batch_size` valid samples that can improve the solution.
-    fn sample_batch<R: Rng + ?Sized>(&mut self, rng: &mut R) {
-        for _ in 0..self.config.bit.batch_size {
-            let informed = Informed {
-                space: &self.space,
-                checker: &self.checker,
-                start: &self.start,
-                goal: &self.goal,
-                best_cost: self.best_cost,
-            };
-
-            if let Some(state) = informed.draw(&mut self.sampler, rng) {
-                self.push_node(state, Kind::Sample);
-            }
-        }
-    }
-
-    /// Rebuilds the index over all live states and fixes this batch's neighbor rule.
-    fn reindex(&mut self) {
-        self.nn = self.prototype.clone();
-        let mut live: usize = 0;
-
-        for (id, node) in self.nodes.iter().enumerate() {
-            if node.kind != Kind::Pruned {
-                self.nn.insert(id, node.state.clone());
-                live += 1;
-            }
-        }
-
-        // As OMPL: every informed state counts, the new batch included, and the radius
-        // shrinks with the informed set's measure.
-        let q = live.max(2);
-        let bound = self.best_cost + self.goal.tolerance();
-        let fraction = self
-            .sampler
-            .informed_fraction(&self.space, &self.start, self.goal.center(), bound)
-            .unwrap_or(1.0);
-        self.neighborhood =
-            Neighborhood::for_batch(&self.config.bit, q, self.space.dimension(), fraction);
-    }
-
-    /// Rebuilds the batch graph: symmetrized neighbors of every live state plus the forward
-    /// tree's own edges, minus nothing (invalid edges are skipped when used).
-    ///
-    /// With a connection radius the neighbor lists are built lazily, on a state's first use
-    /// in the batch ([`EitStar::ensure_adjacent`]), as OMPL does: a radius query from `x`
-    /// finds exactly the states whose own query would find `x` (the distance is symmetric),
-    /// so a lazy list equals the symmetrized one, and states the searches never touch cost
-    /// nothing. `k` nearest neighbors are not symmetric, and neither are radius neighborhoods
-    /// in a space that is not [symmetric](StateSpace::is_symmetric), such as
-    /// [`Dubins`](crate::Dubins); those build the whole symmetrized graph here.
-    fn build_graph(&mut self, first_new: usize) {
-        for node in &mut self.nodes {
-            node.adjacent.clear();
-            node.tree_links.clear();
-        }
-
-        for id in 0..self.nodes.len() {
-            if self.nodes[id].kind == Kind::Pruned {
-                continue;
-            }
-
-            if let Some(parent) = self.nodes[id].parent {
-                self.nodes[id].tree_links.push(parent);
-                self.nodes[parent].tree_links.push(id);
-            }
-        }
-
-        match self.neighborhood {
-            Neighborhood::Radius(radius) if self.space.is_symmetric() => {
-                self.carry_neighbor_lists(radius, first_new);
-            }
-            _ => self.build_symmetrized_graph(),
-        }
-    }
-
-    /// Builds every live state's neighbor list for the `k`-nearest rule: its own neighbors,
-    /// those that have it as a neighbor, and its tree links.
-    fn build_symmetrized_graph(&mut self) {
-        let mut near = Vec::new();
-
-        for id in 0..self.nodes.len() {
-            if self.nodes[id].kind == Kind::Pruned {
-                continue;
-            }
-
-            self.query_neighbors(id, &mut near);
-            for &other in &near {
-                self.nodes[id].adjacent.push(other);
-                self.nodes[other].adjacent.push(id);
-            }
-        }
-
-        for id in 0..self.nodes.len() {
-            let links = core::mem::take(&mut self.nodes[id].tree_links);
-            let node = &mut self.nodes[id];
-            node.adjacent.extend_from_slice(&links);
-            node.adjacent.sort_unstable();
-            node.adjacent.dedup();
-            node.adjacent_batch = self.batches;
-            node.tree_links = links;
-        }
-    }
-
-    /// Starts this batch's radius lists: when the radius did not grow, the new samples are
-    /// queried now and joined to the lists of their older neighbors, so earlier lists stay
-    /// usable ([`NeighborCache`]); otherwise every list is rebuilt on first use.
-    fn carry_neighbor_lists(&mut self, radius: f64, first_new: usize) {
-        let states = self.nodes.len();
-        if !self
-            .neighbor_cache
-            .begin_batch(self.batches, states, radius)
-        {
-            return;
-        }
-
-        let mut near = Vec::new();
-        for sample in first_new..states {
-            if self.nodes[sample].kind == Kind::Pruned {
-                continue;
-            }
-
-            self.query_neighbors(sample, &mut near);
-            near.sort_unstable();
-            self.neighbor_cache.store(sample, &near);
-
-            let older = near.partition_point(|&id| id < first_new);
-            self.neighbor_cache.add_sample(sample, &near[..older]);
-        }
-    }
-
-    /// Builds the neighbor list of `x` for this batch unless it is built already: the live
-    /// states within the connection radius, from the carried list or a fresh query, and the
-    /// tree links, sorted. Pruned states have none.
-    pub(super) fn ensure_adjacent(&mut self, x: usize) {
-        if self.nodes[x].adjacent_batch == self.batches {
-            return;
-        }
-
-        let mut near = core::mem::take(&mut self.nodes[x].adjacent);
-        near.clear();
-
-        if self.nodes[x].kind != Kind::Pruned {
-            self.radius_neighbors(x, &mut near);
-            merge_sorted(&mut near, &self.nodes[x].tree_links);
-        }
-
-        let node = &mut self.nodes[x];
-        node.adjacent = near;
-        node.adjacent_batch = self.batches;
-    }
-
-    /// Replaces `out` with the radius neighbors of `x` in this batch: its carried list,
-    /// narrowed to the live states within the radius and the edge cap exactly as a fresh query
-    /// would select them, or a fresh query that becomes its list.
-    fn radius_neighbors(&mut self, x: usize, out: &mut Vec<usize>) {
-        let Neighborhood::Radius(radius) = self.neighborhood else {
-            unreachable!("only radius neighborhoods are built lazily");
-        };
-
-        let (nodes, space, cap) = (&self.nodes, &self.space, self.config.bit.max_radius);
-        let keep = |y: usize| {
-            let (from, to) = (&nodes[x].state, &nodes[y].state);
-
-            y != x
-                && nodes[y].kind != Kind::Pruned
-                && space.distance(to, from) <= radius
-                && (cap.is_infinite() || space.distance(from, to) <= cap)
-        };
-
-        if let Some(list) = self.neighbor_cache.filter(x, keep) {
-            out.extend_from_slice(list);
-        } else {
-            self.query_neighbors(x, out);
-            out.sort_unstable();
-            self.neighbor_cache.store(x, out);
-        }
-    }
-
-    /// Replaces `out` with the batch neighbors of `id` under the batch rule, without `id`
-    /// itself and without edges longer than `max_radius`.
-    fn query_neighbors(&self, id: usize, out: &mut Vec<usize>) {
-        let cap = self.config.bit.max_radius;
-        let keep = |x| x != id && (cap.is_infinite() || self.cost_estimate(id, x) <= cap);
-
-        self.neighborhood
-            .query(&self.space, &self.nn, &self.nodes[id].state, keep, out);
-    }
-
-    /// The admissible edge cost estimate `c_hat = d(from, to)`.
-    fn cost_estimate(&self, from: usize, to: usize) -> f64 {
-        self.space
-            .distance(&self.nodes[from].state, &self.nodes[to].state)
-    }
-
     /// Whether node `id` is a goal state of the reverse search.
     fn is_goal(&self, id: usize) -> bool {
-        self.nodes[id].kind != Kind::Pruned && self.nodes[id].in_goal()
-    }
-
-    /// The cheapest goal vertex, the lowest id among equally cheap ones, or `None`.
-    fn best_solution(&self) -> Option<usize> {
-        self.solutions
-            .iter()
-            .copied()
-            .min_by(|&a, &b| self.nodes[a].g.total_cmp(&self.nodes[b].g).then(a.cmp(&b)))
+        self.graph.nodes[id].kind != Kind::Pruned && self.graph.nodes[id].in_goal()
     }
 
     /// The cheapest path found so far, or `None` if no vertex reached the goal yet. Its cost
     /// never increases as iterations run.
     #[must_use]
     pub fn best_path(&self) -> Option<Path<Sp::State>> {
-        let best = self.best_solution()?;
-        let mut states = Vec::new();
-        let mut current = Some(best);
-
-        while let Some(id) = current {
-            states.push(self.nodes[id].state.clone());
-            current = self.nodes[id].parent;
-        }
-
-        states.reverse();
-
-        Some(Path {
-            states,
-            cost: self.nodes[best].g,
-        })
+        self.graph.best_path()
     }
 
     /// The number of forward-tree vertices, including the start.
     #[must_use]
     pub fn vertex_count(&self) -> usize {
-        self.count(Kind::Vertex)
+        self.graph.count(Kind::Vertex)
     }
 
     /// The number of samples not connected to the forward tree.
     #[must_use]
     pub fn sample_count(&self) -> usize {
-        self.count(Kind::Sample)
+        self.graph.count(Kind::Sample)
     }
 
     /// The number of batches started so far.
     #[must_use]
     pub const fn batch_count(&self) -> usize {
-        self.batches
+        self.graph.batches
     }
 
     /// The number of states the reverse search currently checks per edge.
     #[must_use]
     pub const fn sparse_check_count(&self) -> usize {
         self.sparse_checks
-    }
-
-    /// The number of stored states of `kind`.
-    fn count(&self, kind: Kind) -> usize {
-        self.nodes.iter().filter(|node| node.kind == kind).count()
     }
 }

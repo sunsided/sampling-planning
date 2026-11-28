@@ -529,6 +529,26 @@ fn eit_star_rejects_a_suboptimality_below_one() {
     );
 }
 
+#[test]
+fn eit_star_reports_a_bad_radius_before_checking_the_effort_settings() {
+    let world = slalom();
+    let mut config = EitStarConfig {
+        suboptimality: 0.5,
+        ..eit_config()
+    };
+    config.bit.gamma = 0.0;
+    let planner = EitStar::new(
+        world.space,
+        world.sampler,
+        world.checker,
+        world.start,
+        world.goal,
+        config,
+    );
+
+    assert_eq!(planner.err(), Some(Error::InvalidRadius));
+}
+
 /// The plane with [`Euclidean`]'s metric that does not claim to be symmetric, so AIT* and
 /// EIT* build their batch graph eagerly and symmetrized instead of lazily.
 #[derive(Debug, Clone, Copy)]
