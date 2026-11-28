@@ -632,3 +632,105 @@ fn eager_batch_graphs_of_unsymmetric_spaces_equal_the_lazy_ones() {
         assert_eq!(lazy.best_path(), eager.best_path(), "EIT*, seed {seed}");
     }
 }
+
+/// Returns `first` once, then uniform samples in the 10 x 10 box.
+struct Scripted {
+    /// The first sample, until drawn.
+    first: Option<[f64; 2]>,
+    /// The sampler after that.
+    rest: UniformBox<2>,
+}
+
+impl sampling_planning::Sampler<[f64; 2]> for Scripted {
+    fn sample<R: rand_core::Rng + ?Sized>(&mut self, rng: &mut R) -> [f64; 2] {
+        self.first.take().unwrap_or_else(|| self.rest.sample(rng))
+    }
+}
+
+/// Steps a batch-informed planner 400 times and asserts that a found solution stays found.
+macro_rules! assert_keeps_solution {
+    ($name:literal, $planner:expr) => {{
+        let mut planner = $planner.expect("valid problem");
+        let mut rng = Pcg64Mcg::seed_from_u64(1);
+        let mut solved = false;
+
+        for step in 0..400 {
+            planner.step(&mut rng);
+            let now = planner.best_path().is_some();
+            assert!(!solved || now, "{}: path lost at step {step}", $name);
+            solved |= now;
+        }
+
+        assert!(solved, "{}: never solved", $name);
+    }};
+}
+
+#[test]
+fn pruning_never_loses_the_solution_to_rounding() {
+    use sampling_planning::GoalRegion;
+
+    // A goal vertex on the goal region's rim, in line with the start: rounding puts the start's
+    // `h_hat` above the solution cost, which used to prune the whole tree.
+    let goal = || {
+        GoalRegion::new(
+            [1.255_127_288_698_057, 8.521_885_935_278_828],
+            0.489_490_361_114_548,
+        )
+    };
+    let sampler = || Scripted {
+        first: Some([1.183_803_212_547_931_6, 8.037_619_799_992_267]),
+        rest: UniformBox::new([0.0; 2], [10.0; 2]),
+    };
+    let bit = BitStarConfig {
+        batch_size: 5,
+        ..BitStarConfig::new(50.0)
+    };
+    let free = Boxes::default;
+
+    let start = [0.0, 0.0];
+    assert_keeps_solution!(
+        "BIT*",
+        BitStar::new(Euclidean::<2>, sampler(), free(), start, goal(), bit)
+    );
+    assert_keeps_solution!(
+        "ABIT*",
+        AbitStar::new(
+            Euclidean::<2>,
+            sampler(),
+            free(),
+            start,
+            goal(),
+            AbitStarConfig::from_bit_star(bit)
+        )
+    );
+    assert_keeps_solution!(
+        "AIT*",
+        AitStar::new(Euclidean::<2>, sampler(), free(), start, goal(), bit)
+    );
+    assert_keeps_solution!(
+        "EIT*",
+        EitStar::new(
+            Euclidean::<2>,
+            sampler(),
+            free(),
+            start,
+            goal(),
+            EitStarConfig::from_bit_star(bit, 0.05)
+        )
+    );
+}
+
+#[test]
+fn a_huge_k_nearest_constant_does_not_overflow() {
+    let config = BitStarConfig {
+        k_nearest: Some(1e10),
+        batch_size: 5,
+        ..BitStarConfig::new(1.0)
+    };
+    // Every node is a neighbor; free space keeps that cheap enough.
+    let free = crate::world::problem(Boxes::default());
+    let mut planner = bit_star(free, config, LinearScan::default());
+    planner.run(50, &mut Pcg64Mcg::seed_from_u64(1));
+
+    assert!(planner.best_path().is_some());
+}

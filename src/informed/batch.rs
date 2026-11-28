@@ -59,7 +59,8 @@ impl Neighborhood {
     ) {
         match self {
             Self::Radius(radius) => nn.within_radius(space, state, radius, out),
-            Self::Nearest(k) => nn.k_nearest(space, state, k + 1, out),
+            // One more, since `state` itself is usually stored; saturating, as `k` may be `usize::MAX`.
+            Self::Nearest(k) => nn.k_nearest(space, state, k.saturating_add(1), out),
         }
 
         out.retain(|&x| keep(x));

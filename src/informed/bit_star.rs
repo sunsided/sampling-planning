@@ -470,9 +470,21 @@ where
             .collect();
         vertices.sort_by(|&a, &b| self.nodes[a].g.total_cmp(&self.nodes[b].g).then(a.cmp(&b)));
 
+        // Rounding can lift the solution's own branch above `c` (a goal vertex on the
+        // region's rim, in line with the start, gets `h_hat(start) > c`); never cut it.
+        let mut on_solution = alloc::vec![false; self.nodes.len()];
+        let mut current = self.best_solution();
+        while let Some(id) = current {
+            on_solution[id] = true;
+            current = self.nodes[id].parent;
+        }
+
         for v in vertices {
             let node = &self.nodes[v];
-            if node.kind == Kind::Vertex && (node.f_hat() > c || node.g + node.h_hat > c) {
+            if node.kind == Kind::Vertex
+                && !on_solution[v]
+                && (node.f_hat() > c || node.g + node.h_hat > c)
+            {
                 self.disconnect(v);
             }
         }
@@ -823,15 +835,19 @@ where
             .fold(f64::INFINITY, f64::min);
     }
 
+    /// The cheapest goal vertex, the lowest id among equally cheap ones, or `None`.
+    fn best_solution(&self) -> Option<usize> {
+        self.solutions
+            .iter()
+            .copied()
+            .min_by(|&a, &b| self.nodes[a].g.total_cmp(&self.nodes[b].g).then(a.cmp(&b)))
+    }
+
     /// The cheapest path found so far, or `None` if no vertex reached the goal yet. Its cost
     /// never increases as iterations run.
     #[must_use]
     pub fn best_path(&self) -> Option<Path<Sp::State>> {
-        let best = self
-            .solutions
-            .iter()
-            .copied()
-            .min_by(|&a, &b| self.nodes[a].g.total_cmp(&self.nodes[b].g).then(a.cmp(&b)))?;
+        let best = self.best_solution()?;
         let mut states = Vec::new();
         let mut current = Some(best);
 

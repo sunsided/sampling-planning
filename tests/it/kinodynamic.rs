@@ -322,3 +322,20 @@ fn one_level_kpiece_is_the_single_level_planner_and_ratios_are_checked() {
     );
     assert!(Kpiece::with_levels(world(), projection, config, levels(63), 2).is_ok());
 }
+
+#[test]
+fn kpiece_draws_step_counts_from_min_steps_on() {
+    let projection = |state: &[f64; 2]| *state;
+    let mut config = KpieceConfig::new([0.5, 0.5], DT, 10);
+    config.min_steps = 10;
+    let free = KinodynamicProblem {
+        checker: Boxes::default(),
+        ..world()
+    };
+    let mut planner = Kpiece::new(free, projection, config).expect("valid");
+    let mut rng = Pcg64Mcg::seed_from_u64(1);
+
+    // In free space every propagation runs all its steps, so none falls short of `min_steps`.
+    let added = (0..200).filter(|_| planner.step(&mut rng)).count();
+    assert!(added > 150, "{added} of 200 steps added");
+}
