@@ -18,9 +18,10 @@ use crate::{Sampler, StateSpace, unit_f64};
 /// ```
 #[must_use]
 pub fn wrap_angle(angle: f64) -> f64 {
-    let wrapped = angle - TAU * libm::floor((angle + PI) / TAU);
+    // `remainder` is exact, so large angles keep their orientation; it lands in [-pi, pi].
+    let wrapped = libm::remainder(angle, TAU);
 
-    // Rounding can land exactly on +pi; that is the same orientation as -pi.
+    // +pi is the same orientation as -pi.
     if wrapped >= PI {
         wrapped - TAU
     } else {
@@ -104,6 +105,14 @@ pub(crate) fn uniform_angle<R: Rng + ?Sized>(rng: &mut R) -> f64 {
 mod tests {
     use super::*;
     use rand_core::SeedableRng;
+
+    #[test]
+    fn wrapping_stays_in_range_for_huge_angles() {
+        for angle in [1.42e14, 1e16, -1e16, 7.0e300] {
+            let wrapped = wrap_angle(angle);
+            assert!((-PI..PI).contains(&wrapped), "{angle} wrapped to {wrapped}");
+        }
+    }
 
     #[test]
     fn wrapping_covers_both_directions_and_the_seam() {

@@ -3,8 +3,46 @@
 
 use alloc::{collections::BTreeSet, vec::Vec};
 
+use super::Error;
 use crate::graph::{Arc, shortest_path};
 use crate::{GoalRegion, NearestNeighbors, Path, StateSpace, ValidityChecker};
+
+/// Checks the ranges SPARS and SPARS2 share: positive, finite `dense_delta < sparse_delta` and
+/// a finite `stretch > 1`.
+pub(super) fn validate_ranges(
+    sparse_delta: f64,
+    dense_delta: f64,
+    stretch: f64,
+) -> Result<(), Error> {
+    let positive = |value: f64| value.is_finite() && value > 0.0;
+    let valid = positive(sparse_delta)
+        && positive(dense_delta)
+        && dense_delta < sparse_delta
+        && stretch.is_finite()
+        && stretch > 1.0;
+
+    if valid {
+        Ok(())
+    } else {
+        Err(Error::InvalidRadius)
+    }
+}
+
+/// Whether the motion between `a` and `b` checks as valid, also from `b` to `a` if `both`.
+pub(super) fn is_edge_valid<Sp, C>(
+    space: &Sp,
+    checker: &C,
+    a: &Sp::State,
+    b: &Sp::State,
+    both: bool,
+) -> bool
+where
+    Sp: StateSpace,
+    C: ValidityChecker<Sp>,
+{
+    checker.check_motion(space, a, b).is_valid()
+        && (!both || checker.check_motion(space, b, a).is_valid())
+}
 
 /// Why a guard was added to a sparse roadmap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -106,6 +144,18 @@ impl<S: Clone, N> SparseGraph<S, N> {
     /// The number of edges.
     pub(super) fn edge_count(&self) -> usize {
         self.edges.len()
+    }
+
+    /// The number of guards of each kind: coverage, connectivity, interface, quality.
+    pub(super) fn guard_counts(&self) -> [usize; 4] {
+        let count = |kind| self.kinds.iter().filter(|&&k| k == kind).count();
+
+        [
+            count(GuardKind::Coverage),
+            count(GuardKind::Connectivity),
+            count(GuardKind::Interface),
+            count(GuardKind::Quality),
+        ]
     }
 
     /// Whether `a` and `b` share an edge.
@@ -256,6 +306,10 @@ impl<S: Clone, N> SparseGraph<S, N> {
     /// visible guard within `radius` (and to each other when they are that close), or `None`
     /// if they are not connected. Motions are checked in travel direction; graph edges were
     /// checked when they were added.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidStart`] if `start` does not check as valid.
     pub(super) fn query<Sp, C>(
         &self,
         space: &Sp,
@@ -263,12 +317,17 @@ impl<S: Clone, N> SparseGraph<S, N> {
         start: &S,
         goal: &GoalRegion<S>,
         radius: f64,
-    ) -> Option<Path<S>>
+    ) -> Result<Option<Path<S>>, Error>
     where
         Sp: StateSpace<State = S>,
         C: ValidityChecker<Sp>,
         N: NearestNeighbors<Sp>,
     {
+        let validity = checker.check_state(start);
+        if !validity.is_valid() {
+            return Err(Error::InvalidStart(validity));
+        }
+
         let n = self.len();
         let (start_id, center_id) = (n, n + 1);
         let center = goal.center();
@@ -322,12 +381,14 @@ impl<S: Clone, N> SparseGraph<S, N> {
             }));
         };
         let is_goal = |id: usize| id == center_id || goal.contains(space, state_of(id));
-        let route = shortest_path(n + 2, start_id, is_goal, arcs)?;
+        let Some(route) = shortest_path(n + 2, start_id, is_goal, arcs) else {
+            return Ok(None);
+        };
 
-        Some(Path {
+        Ok(Some(Path {
             states: route.nodes.iter().map(|&id| state_of(id).clone()).collect(),
             cost: route.cost,
-        })
+        }))
     }
 }
 

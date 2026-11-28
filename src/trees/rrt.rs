@@ -80,7 +80,7 @@ where
     /// Runs one iteration. Returns whether a node was added.
     pub fn step<R: Rng + ?Sized>(&mut self, rng: &mut R) -> bool {
         let (nearest, new) = self.growth.propose(rng);
-        let valid = self.growth.is_motion_valid(nearest, &new);
+        let valid = self.growth.is_extension_valid(nearest, &new);
 
         if valid {
             let cost = self.growth.cost_via(nearest, &new);
@@ -127,14 +127,14 @@ where
     /// The number of tree nodes, including the root.
     #[must_use]
     pub fn node_count(&self) -> usize {
-        self.growth.tree.len()
+        self.growth.indexed.tree.len()
     }
 
     /// The number of vertices retired from the nearest-neighbor index; always zero unless
     /// [`Rrt::with_retirement`] enabled retirement.
     #[must_use]
     pub const fn retired_count(&self) -> usize {
-        self.growth.retirement.retired()
+        self.growth.indexed.retirement.retired()
     }
 }
 
@@ -148,8 +148,11 @@ where
     /// failed extensions; see [the module docs](crate::trees#vertex-retirement).
     #[must_use]
     pub fn with_retirement(mut self, failures: NonZeroUsize) -> Self {
-        let reached = self.growth.nn.clone();
-        self.growth.retirement.enable(failures, N::remove, reached);
+        let reached = self.growth.indexed.nn.clone();
+        self.growth
+            .indexed
+            .retirement
+            .enable(failures, N::remove, reached);
         self
     }
 }

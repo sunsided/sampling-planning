@@ -20,7 +20,14 @@ impl<const N: usize> StateSpace for Euclidean<N> {
     }
 
     fn interpolate(&self, from: &[f64; N], to: &[f64; N], t: f64) -> [f64; N] {
-        core::array::from_fn(|i| from[i] + (to[i] - from[i]) * t)
+        // The endpoints verbatim: `from + (to - from) * 1` can miss `to` by rounding.
+        if t <= 0.0 {
+            *from
+        } else if t >= 1.0 {
+            *to
+        } else {
+            core::array::from_fn(|i| from[i] + (to[i] - from[i]) * t)
+        }
     }
 
     fn is_euclidean(&self) -> bool {
@@ -35,6 +42,14 @@ impl<const N: usize> StateSpace for Euclidean<N> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interpolation_returns_the_endpoints_verbatim() {
+        let (a, b) = ([9.301_169_534_657_39], [-4.664_071_185_617_78]);
+
+        assert_eq!(Euclidean::<1>.interpolate(&a, &b, 1.0), b);
+        assert_eq!(Euclidean::<1>.interpolate(&a, &b, 0.0), a);
+    }
 
     #[test]
     fn distance_is_euclidean() {

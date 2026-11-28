@@ -14,17 +14,17 @@ where
     /// The forward key of the edge from `v` to `x`: `(g_F(v) + c_hat + h_con(x), g_F(v) +
     /// c_hat, g_F(v))`.
     pub(super) fn edge_key(&self, v: usize, x: usize) -> [f64; 3] {
-        let g = self.nodes[v].g;
-        let through = g + self.cost_estimate(v, x);
+        let g = self.graph.nodes[v].g;
+        let through = g + self.graph.cost_estimate(v, x);
 
-        [through + self.nodes[x].h_con, through, g]
+        [through + self.graph.nodes[x].ext.h_con, through, g]
     }
 
     /// Queues the outgoing edges of vertex `v` to all its neighbors that are not known to be
     /// invalid (Algorithms 3 and 4).
     pub(super) fn expand(&mut self, v: usize) {
-        self.ensure_adjacent(v);
-        let neighbors = core::mem::take(&mut self.nodes[v].adjacent);
+        self.graph.ensure_adjacent(v);
+        let neighbors = core::mem::take(&mut self.graph.nodes[v].links.adjacent);
 
         for &x in &neighbors {
             if !self.is_invalid(v, x) {
@@ -32,14 +32,14 @@ where
             }
         }
 
-        self.nodes[v].adjacent = neighbors;
+        self.graph.nodes[v].links.adjacent = neighbors;
     }
 
     /// Queues the edge from `v` to `x` with its current key, unless it is queued with that
     /// key already.
     fn queue_edge(&mut self, v: usize, x: usize) {
         let key = self.edge_key(v, x);
-        let incoming = &mut self.nodes[x].incoming;
+        let incoming = &mut self.graph.nodes[x].ext.incoming;
 
         match incoming.iter_mut().find(|(from, _)| *from == v) {
             Some((_, old)) if same_key(*old, key) => return,
@@ -56,7 +56,7 @@ where
 
     /// Re-queues the queued edges into `x` after its `h_con` changed.
     pub(super) fn rekey_incoming(&mut self, x: usize) {
-        let mut incoming = core::mem::take(&mut self.nodes[x].incoming);
+        let mut incoming = core::mem::take(&mut self.graph.nodes[x].ext.incoming);
 
         for (v, key) in &mut incoming {
             let fresh = self.edge_key(*v, x);
@@ -71,12 +71,13 @@ where
             }
         }
 
-        self.nodes[x].incoming = incoming;
+        self.graph.nodes[x].ext.incoming = incoming;
     }
 
     /// Whether `edge` is the live queue entry of its edge.
     fn is_live(&self, edge: &EdgeEntry) -> bool {
-        self.nodes[edge.to]
+        self.graph.nodes[edge.to]
+            .ext
             .incoming
             .iter()
             .any(|&(from, key)| from == edge.from && same_key(key, edge.key))
@@ -99,7 +100,8 @@ where
     pub(super) fn pop_edge(&mut self) -> Option<EdgeEntry> {
         let edge = self.peek_edge()?;
         self.forward_queue.pop();
-        self.nodes[edge.to]
+        self.graph.nodes[edge.to]
+            .ext
             .incoming
             .retain(|&(from, _)| from != edge.from);
 
@@ -111,8 +113,8 @@ where
         self.forward_queue.clear();
         self.stale_keys = false;
 
-        for node in &mut self.nodes {
-            node.incoming.clear();
+        for node in &mut self.graph.nodes {
+            node.ext.incoming.clear();
         }
     }
 
@@ -125,8 +127,8 @@ where
         self.stale_keys = false;
         self.forward_queue.clear();
 
-        for x in 0..self.nodes.len() {
-            let mut incoming = core::mem::take(&mut self.nodes[x].incoming);
+        for x in 0..self.graph.nodes.len() {
+            let mut incoming = core::mem::take(&mut self.graph.nodes[x].ext.incoming);
 
             for (v, key) in &mut incoming {
                 *key = self.edge_key(*v, x);
@@ -137,7 +139,7 @@ where
                 });
             }
 
-            self.nodes[x].incoming = incoming;
+            self.graph.nodes[x].ext.incoming = incoming;
         }
     }
 
@@ -148,23 +150,23 @@ where
     pub(super) fn process_edge(&mut self, edge: EdgeEntry) -> bool {
         let (v, x) = (edge.from, edge.to);
 
-        if self.nodes[v].kind != Kind::Vertex || self.nodes[x].kind == Kind::Pruned {
+        if self.graph.nodes[v].kind != Kind::Vertex || self.graph.nodes[x].kind == Kind::Pruned {
             return false;
         }
 
         let [total, through, _] = self.edge_key(v, x);
 
-        if total >= self.best_cost {
+        if total >= self.graph.best_cost {
             self.clear_forward_queue();
             return false;
         }
 
-        if self.nodes[x].parent == Some(v) {
+        if self.graph.nodes[x].parent == Some(v) {
             self.expand(x);
             return false;
         }
 
-        if through >= self.nodes[x].g {
+        if through >= self.graph.nodes[x].g {
             return false;
         }
 
@@ -182,55 +184,54 @@ where
 
     /// Whether the motion from node `from` to node `to` checks as valid.
     fn is_motion_valid(&self, from: usize, to: usize) -> bool {
-        self.checker
-            .check_motion(&self.space, &self.nodes[from].state, &self.nodes[to].state)
+        self.graph
+            .checker
+            .check_motion(
+                &self.graph.space,
+                &self.graph.nodes[from].state,
+                &self.graph.nodes[to].state,
+            )
             .is_valid()
     }
 
     /// Makes `v` the parent of `x` with cost `g`: adds the sample `x` to the tree, or rewires
     /// the vertex `x` and lowers the costs of its subtree. Updates the solution.
     fn connect(&mut self, v: usize, x: usize, g: f64) {
-        if let Some(old) = self.nodes[x].parent {
-            self.nodes[old].children.retain(|&child| child != x);
+        if let Some(old) = self.graph.nodes[x].parent {
+            self.graph.nodes[old].children.retain(|&child| child != x);
             self.stale_keys = true;
         }
 
-        let was_sample = self.nodes[x].kind == Kind::Sample;
-        let node = &mut self.nodes[x];
+        let was_sample = self.graph.nodes[x].kind == Kind::Sample;
+        let node = &mut self.graph.nodes[x];
         node.parent = Some(v);
         node.g = g;
         node.kind = Kind::Vertex;
-        self.nodes[v].children.push(x);
+        self.graph.nodes[v].children.push(x);
 
         if was_sample {
-            if self.nodes[x].in_goal() {
-                self.solutions.push(x);
+            if self.graph.nodes[x].in_goal() {
+                self.graph.solutions.push(x);
             }
         } else {
             self.propagate_costs(x);
         }
 
-        self.update_best_cost();
+        self.graph.update_best_cost();
     }
 
     /// Recomputes the costs of all descendants of `x` from their parents' costs.
     fn propagate_costs(&mut self, x: usize) {
-        let mut stack = self.nodes[x].children.clone();
+        let mut stack = self.graph.nodes[x].children.clone();
 
         while let Some(child) = stack.pop() {
-            let parent = self.nodes[child].parent.expect("a child has a parent");
-            self.nodes[child].g = self.nodes[parent].g + self.cost_estimate(parent, child);
-            stack.extend_from_slice(&self.nodes[child].children);
+            let parent = self.graph.nodes[child]
+                .parent
+                .expect("a child has a parent");
+            self.graph.nodes[child].g =
+                self.graph.nodes[parent].g + self.graph.cost_estimate(parent, child);
+            stack.extend_from_slice(&self.graph.nodes[child].children);
         }
-    }
-
-    /// Sets `c_current` to the cost of the cheapest solution vertex (Algorithm 2, line 19).
-    fn update_best_cost(&mut self) {
-        self.best_cost = self
-            .solutions
-            .iter()
-            .map(|&id| self.nodes[id].g)
-            .fold(f64::INFINITY, f64::min);
     }
 }
 

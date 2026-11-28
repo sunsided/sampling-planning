@@ -6,7 +6,7 @@ use rand_core::Rng;
 
 use super::{
     Error,
-    sparse::{GuardKind, SparseGraph},
+    sparse::{GuardKind, SparseGraph, is_edge_valid, validate_ranges},
 };
 use crate::{
     GoalRegion, LinearScan, NearestNeighbors, Path, Sampler, StateSpace, ValidityChecker, unit_f64,
@@ -52,18 +52,7 @@ impl Spars2Config {
 
     /// Checks every field against its documented range.
     fn validate(&self) -> Result<(), Error> {
-        let positive = |value: f64| value.is_finite() && value > 0.0;
-        let valid = positive(self.sparse_delta)
-            && positive(self.dense_delta)
-            && self.dense_delta < self.sparse_delta
-            && self.stretch.is_finite()
-            && self.stretch > 1.0;
-
-        if valid {
-            Ok(())
-        } else {
-            Err(Error::InvalidRadius)
-        }
+        validate_ranges(self.sparse_delta, self.dense_delta, self.stretch)
     }
 }
 
@@ -113,8 +102,8 @@ type Interfaces<S> = BTreeMap<(usize, usize), InterfaceData<S>>;
 ///
 /// Differences to OMPL's `SPARStwo`, documented here so that results can be compared: the
 /// quality criterion uses OMPL's midpoint estimate `(d(r, v) + d(v, r'')) / 2` for the path
-/// through `v`, as OMPL does (the paper takes a graph shortest path), but adds the path of
-/// interface points without OMPL's smoothing step; the stretch test around a guard stops at the
+/// through `v`, as OMPL does (the paper takes a graph shortest path), and smooths the path of
+/// interface points by a greedy shortcut in place of OMPL's path simplification; the stretch test around a guard stops at the
 /// first violation, even when no shortcut could be added (OMPL finishes the neighbor's inner
 /// loop); any change to the graph resets the failure
 /// counter (OMPL resets it only for new guards and direct interface edges); and sampling near
@@ -275,11 +264,9 @@ where
 
     /// Whether the motion between `a` and `b` checks as valid, both ways if configured.
     fn is_edge_valid(&self, a: &Sp::State, b: &Sp::State) -> bool {
-        let forward = self.checker.check_motion(&self.space, a, b).is_valid();
+        let both = self.config.check_both_directions;
 
-        forward
-            && (!self.config.check_both_directions
-                || self.checker.check_motion(&self.space, b, a).is_valid())
+        is_edge_valid(&self.space, &self.checker, a, b, both)
     }
 
     /// Adds `state` as a guard and forgets the interface data of every guard that can see it,
@@ -537,8 +524,9 @@ where
         self.add_chain(r, [sigma_r, point_r], v, [point_rp, sigma_rp], r_prime);
     }
 
-    /// Adds the guards `before` between `r` and `v` and `after` between `v` and `r'`, chained
-    /// by edges, if every motion along `r, before, v, after, r'` checks as valid.
+    /// Adds the chain `r, before, v, after, r'` after dropping the points a greedy shortcut
+    /// skips (in place of OMPL's smoothing), if every remaining motion checks as valid. Points that stay become quality guards; `v` stays
+    /// itself. Unsmoothed, the chain runs through `v` and is never shorter than `r, v, r'`.
     fn add_chain(
         &mut self,
         r: usize,
@@ -547,39 +535,63 @@ where
         after: [Sp::State; 2],
         r_prime: usize,
     ) {
+        /// The position of `v` in the chain.
+        const V: usize = 3;
+
         let states = &self.graph.states;
-        let chain: Vec<&Sp::State> = [&states[r]]
+        let chain: Vec<Sp::State> = [states[r].clone()]
             .into_iter()
-            .chain(&before)
-            .chain([&states[v]])
-            .chain(&after)
-            .chain([&states[r_prime]])
+            .chain(before)
+            .chain([states[v].clone()])
+            .chain(after)
+            .chain([states[r_prime].clone()])
             .collect();
 
-        if !chain
+        let kept = self.shortcut_chain(&chain);
+
+        // The jumps are checked; the single steps taken where none worked are not yet.
+        if !kept
             .windows(2)
-            .all(|pair| self.is_edge_valid(pair[0], pair[1]))
+            .filter(|pair| pair[1] == pair[0] + 1)
+            .all(|pair| self.is_edge_valid(&chain[pair[0]], &chain[pair[1]]))
         {
             return;
         }
 
         let mut prior = r;
-        for state in before {
-            let guard = self.add_guard(state, GuardKind::Quality);
-            self.graph.connect(prior, guard);
-            prior = guard;
-        }
 
-        self.graph.connect(prior, v);
-        prior = v;
+        for &index in &kept[1..kept.len() - 1] {
+            let guard = if index == V {
+                v
+            } else {
+                self.add_guard(chain[index].clone(), GuardKind::Quality)
+            };
 
-        for state in after {
-            let guard = self.add_guard(state, GuardKind::Quality);
             self.graph.connect(prior, guard);
             prior = guard;
         }
 
         self.graph.connect(prior, r_prime);
+    }
+
+    /// The indices of `chain` a greedy shortcut keeps, first and last included: from each
+    /// kept point it jumps to the furthest point a valid edge reaches, else takes the next
+    /// one. The first point is not tried against the last, since the caller found that edge
+    /// invalid.
+    fn shortcut_chain(&self, chain: &[Sp::State]) -> Vec<usize> {
+        let mut kept = alloc::vec![0];
+        let mut current = 0;
+
+        while current + 1 < chain.len() {
+            let furthest = chain.len() - if current == 0 { 2 } else { 1 };
+            current = (current + 2..=furthest)
+                .rev()
+                .find(|&to| self.is_edge_valid(&chain[current], &chain[to]))
+                .unwrap_or(current + 1);
+            kept.push(current);
+        }
+
+        kept
     }
 
     /// The cheapest path from `start` to `goal` through the roadmap, or `None` if the roadmap
@@ -594,18 +606,10 @@ where
         start: &Sp::State,
         goal: &GoalRegion<Sp::State>,
     ) -> Result<Option<Path<Sp::State>>, Error> {
-        let validity = self.checker.check_state(start);
-        if !validity.is_valid() {
-            return Err(Error::InvalidStart(validity));
-        }
+        let radius = self.config.sparse_delta;
 
-        Ok(self.graph.query(
-            &self.space,
-            &self.checker,
-            start,
-            goal,
-            self.config.sparse_delta,
-        ))
+        self.graph
+            .query(&self.space, &self.checker, start, goal, radius)
     }
 
     /// Whether `max_failures` consecutive samples changed nothing.
@@ -630,18 +634,62 @@ where
     /// quality.
     #[must_use]
     pub fn guard_counts(&self) -> [usize; 4] {
-        let count = |kind| self.graph.kinds.iter().filter(|&&k| k == kind).count();
-
-        [
-            count(GuardKind::Coverage),
-            count(GuardKind::Connectivity),
-            count(GuardKind::Interface),
-            count(GuardKind::Quality),
-        ]
+        self.graph.guard_counts()
     }
 }
 
 /// The interface-data key of the neighbor pair `(a, b)`: `(smaller id, larger id)`.
 fn pair(a: usize, b: usize) -> (usize, usize) {
     (a.min(b), a.max(b))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Euclidean, UniformBox, Validity, discretized_motion};
+
+    /// A post at `x` in `[0.9, 1.1]` for `y < 0.3`.
+    struct Post;
+
+    impl ValidityChecker<Euclidean<2>> for Post {
+        fn check_state(&self, s: &[f64; 2]) -> Validity {
+            if (0.9..=1.1).contains(&s[0]) && s[1] < 0.3 {
+                Validity::Invalid
+            } else {
+                Validity::Valid
+            }
+        }
+
+        fn check_motion(&self, space: &Euclidean<2>, from: &[f64; 2], to: &[f64; 2]) -> Validity {
+            discretized_motion(space, from, to, 0.01, |s| self.check_state(s))
+        }
+    }
+
+    #[test]
+    fn a_quality_chain_is_smoothed_past_v() {
+        let mut spars = Spars2::new(
+            Euclidean::<2>,
+            UniformBox::new([0.0; 2], [2.0; 2]),
+            Post,
+            Spars2Config::new(3.0, 0.2),
+        )
+        .expect("valid config");
+        // The post blocks r to r'; v lies far above it.
+        let r = spars.add_guard([0.0, 0.0], GuardKind::Coverage);
+        let v = spars.add_guard([1.0, 2.0], GuardKind::Coverage);
+        let r_prime = spars.add_guard([2.0, 0.0], GuardKind::Coverage);
+
+        spars.add_chain(
+            r,
+            [[0.3, 0.5], [0.6, 0.8]],
+            v,
+            [[1.4, 0.8], [1.7, 0.5]],
+            r_prime,
+        );
+
+        // r reaches (1.4, 0.8) over the post, which reaches r': one new guard, v untouched.
+        assert_eq!(spars.graph.adjacency[v], Vec::<usize>::new());
+        assert_eq!(spars.graph.len(), 4);
+        assert!(spars.graph.has_edge(r, 3) && spars.graph.has_edge(3, r_prime));
+    }
 }

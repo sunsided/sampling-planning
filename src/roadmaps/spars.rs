@@ -12,7 +12,7 @@ use rand_core::Rng;
 
 use super::{
     Error,
-    sparse::{GuardKind, SparseGraph},
+    sparse::{GuardKind, SparseGraph, is_edge_valid, validate_ranges},
 };
 use crate::radius::k_constant_lower_bound;
 use crate::{GoalRegion, LinearScan, NearestNeighbors, Path, Sampler, StateSpace, ValidityChecker};
@@ -57,18 +57,7 @@ impl SparsConfig {
 
     /// Checks every field against its documented range.
     fn validate(&self) -> Result<(), Error> {
-        let positive = |value: f64| value.is_finite() && value > 0.0;
-        let valid = positive(self.sparse_delta)
-            && positive(self.dense_delta)
-            && self.dense_delta < self.sparse_delta
-            && self.stretch.is_finite()
-            && self.stretch > 1.0;
-
-        if valid {
-            Ok(())
-        } else {
-            Err(Error::InvalidRadius)
-        }
+        validate_ranges(self.sparse_delta, self.dense_delta, self.stretch)
     }
 }
 
@@ -101,6 +90,17 @@ impl SparsConfig {
 /// cost at most about `stretch` times the optimum plus a term in `sparse_delta`, with far
 /// fewer nodes than the dense graph. [`Spars::query`] searches only the sparse graph.
 ///
+/// **Quality guards keep growing with the dense graph.** As in OMPL, `s_max` is the
+/// straight-line estimate `(d(x, v) + d(v, v')) / 2`, which does not see quality paths added
+/// earlier, so every new dense node whose dense path is short enough adds another one, and
+/// each new guard resets the failure counter. In a 10 x 10 world with two walls,
+/// `sparse_delta = 1` and `dense_delta = 0.1`, 8 000 samples give 74 quality guards,
+/// 20 000 give 2 612 and 32 000 about 12 000, and construction time grows from 0.2 s to
+/// 260 s (release build, [`KdTree`](crate::KdTree)); [`Spars2`] stays near 125 guards and
+/// below a second over the same range. Cap construction with
+/// `max_samples`, or use [`Spars2`] for large roadmaps.
+///
+/// [`Spars2`]: super::Spars2
 /// ```mermaid
 /// graph LR
 ///     Sample --> Dense["add to D, update representatives"]
@@ -115,7 +115,7 @@ impl SparsConfig {
 /// (`addMilestone`, `calculateRepresentative`, `updateRepresentatives` over the dense nodes
 /// within `sparse_delta + dense_delta` of each new guard), the loop nesting of `checkAddPath`
 /// and the failure counting (incremented only when all four tests fail, reset by every new
-/// guard, the direct interface edge and the zero-length path case) follow OMPL. Differences to
+/// guard and the direct interface edge) follow OMPL. Differences to
 /// OMPL's `SPARS`, documented here so that results can be compared:
 ///
 /// - OMPL connects the first state of an added quality path to `v''` and the last to `v'`
@@ -131,6 +131,8 @@ impl SparsConfig {
 /// - OMPL's randomized `reduceVertices` is replaced by the deterministic greedy
 ///   [`shortcut`](crate::shortcut()).
 /// - Dense paths come from Dijkstra (ties by id) instead of A*; their lengths agree.
+/// - An interface neighbor is closer than `dense_delta`, in the neighborhood and in the
+///   neighbor lookup alike, so a node at exactly `dense_delta` is neither.
 /// - A dense node without a visible guard has no representative (OMPL leaves an unset value);
 ///   it is kept out of interface lists until a guard covers it, which the coverage criterion
 ///   does in the same step.
@@ -346,11 +348,9 @@ where
 
     /// Whether the motion between `a` and `b` checks as valid, both ways if configured.
     fn is_edge_valid(&self, a: &Sp::State, b: &Sp::State) -> bool {
-        let forward = self.checker.check_motion(&self.space, a, b).is_valid();
+        let both = self.config.check_both_directions;
 
-        forward
-            && (!self.config.check_both_directions
-                || self.checker.check_motion(&self.space, b, a).is_valid())
+        is_edge_valid(&self.space, &self.checker, a, b, both)
     }
 
     /// Whether the motion between guards `a` and `b` checks as valid.
@@ -417,18 +417,10 @@ where
         start: &Sp::State,
         goal: &GoalRegion<Sp::State>,
     ) -> Result<Option<Path<Sp::State>>, Error> {
-        let validity = self.checker.check_state(start);
-        if !validity.is_valid() {
-            return Err(Error::InvalidStart(validity));
-        }
+        let radius = self.config.sparse_delta;
 
-        Ok(self.graph.query(
-            &self.space,
-            &self.checker,
-            start,
-            goal,
-            self.config.sparse_delta,
-        ))
+        self.graph
+            .query(&self.space, &self.checker, start, goal, radius)
     }
 
     /// Whether `max_failures` consecutive valid samples failed all four criteria.
@@ -459,14 +451,7 @@ where
     /// quality.
     #[must_use]
     pub fn guard_counts(&self) -> [usize; 4] {
-        let count = |kind| self.graph.kinds.iter().filter(|&&k| k == kind).count();
-
-        [
-            count(GuardKind::Coverage),
-            count(GuardKind::Connectivity),
-            count(GuardKind::Interface),
-            count(GuardKind::Quality),
-        ]
+        self.graph.guard_counts()
     }
 }
 

@@ -37,10 +37,11 @@ pub struct KpieceConfig<const K: usize> {
     /// checked with [`ValidityChecker::check_motion`]. Positive and finite.
     pub step_size: f64,
     /// The most integration steps per propagation; the step count is uniform in
-    /// `1..=max_steps`. At least `min_steps`.
+    /// `min_steps..=max_steps`. At least `min_steps`.
     pub max_steps: usize,
-    /// The fewest valid steps for a propagation to count; shorter ones are discarded and
-    /// penalize their cell. At least one.
+    /// The fewest integration steps per propagation, and the fewest valid ones for it to
+    /// count; propagations cut shorter by an invalid step are discarded and penalize their
+    /// cell. At least one.
     pub min_steps: usize,
     /// Probability in `[0, 1]` of expanding one of the motions closest to the goal instead of
     /// a grid selection. 5 % by default.
@@ -344,7 +345,9 @@ where
 
         let (from, cell) = self.choose_motion(rng);
         let control = self.problem.propagator.sample_control(rng);
-        let steps = random_step_count(self.config.max_steps, rng);
+        // Uniform in `min_steps..=max_steps`: shorter draws could only be discarded.
+        let (min, max) = (self.config.min_steps, self.config.max_steps);
+        let steps = min - 1 + random_step_count(max - min + 1, rng);
         let states = self.propagate_while_valid(from, &control, steps);
         let good = states.len() >= self.config.min_steps;
 

@@ -3,13 +3,13 @@
 use core::fmt;
 use core::num::NonZeroUsize;
 
-use crate::StateSpace;
 use crate::radius::count_to_f64;
+use crate::{Euclidean, StateSpace};
 
 /// R^N with a configuration-dependent metric tensor `G(q)`: the length of a motion is
 /// `integral of sqrt(dq^T G(q) dq)` along it.
 ///
-/// Motions are straight lines in coordinates, as in [`Euclidean`](crate::Euclidean), and
+/// Motions are straight lines in coordinates, as in [`Euclidean`], and
 /// [`StateSpace::distance`] is their length by the midpoint rule over `segments` equal pieces:
 /// `sum_k sqrt(d^T G(m_k) d)` with `d = (to - from) / segments` and `m_k` the midpoint of
 /// piece `k` (Kyaw and Kelly use the same approximation). Joint-space planning under a
@@ -106,13 +106,14 @@ where
                     .map(|(i, j)| step[i] * g[i][j] * step[j])
                     .sum();
 
-                libm::sqrt(quadratic.max(0.0))
+                // Clamps rounding below zero but lets a NaN metric show as a NaN cost.
+                libm::sqrt(if quadratic < 0.0 { 0.0 } else { quadratic })
             })
             .sum()
     }
 
     fn interpolate(&self, from: &[f64; N], to: &[f64; N], t: f64) -> [f64; N] {
-        core::array::from_fn(|i| from[i] + (to[i] - from[i]) * t)
+        Euclidean::<N>.interpolate(from, to, t)
     }
 }
 
@@ -120,6 +121,13 @@ where
 mod tests {
     use super::*;
     use crate::LoewnerBound;
+
+    #[test]
+    fn a_nan_metric_gives_a_nan_cost_not_a_free_edge() {
+        let space = Riemannian::new(|_: &[f64; 1]| [[f64::NAN]], NonZeroUsize::MIN);
+
+        assert!(space.distance(&[0.0], &[5.0]).is_nan());
+    }
 
     /// A metric that grows quadratically away from the origin: `A + |q|^2 B`.
     fn growing(q: &[f64; 2]) -> [[f64; 2]; 2] {

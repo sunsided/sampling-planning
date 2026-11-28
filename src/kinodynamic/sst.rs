@@ -397,7 +397,7 @@ where
         best.unwrap_or_else(|| {
             self.active
                 .nearest(space, target)
-                .expect("every witness keeps one node active")
+                .expect(crate::nearest::NO_NEAREST)
         })
     }
 
@@ -441,7 +441,7 @@ where
         let witness = self
             .witness_nn
             .nearest(space, state)
-            .expect("the start is always a witness");
+            .expect(crate::nearest::NO_NEAREST);
         let Witness {
             state: point,
             representative,

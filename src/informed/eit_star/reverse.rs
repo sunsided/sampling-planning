@@ -19,16 +19,16 @@ where
         self.reverse_queue.clear();
         self.reverse_tag += 1;
 
-        for node in &mut self.nodes {
-            node.h = f64::INFINITY;
-            node.effort = usize::MAX;
-            node.reverse_parent = None;
+        for node in &mut self.graph.nodes {
+            node.ext.h = f64::INFINITY;
+            node.ext.effort = usize::MAX;
+            node.ext.reverse_parent = None;
         }
 
-        for goal in 0..self.nodes.len() {
+        for goal in 0..self.graph.nodes.len() {
             if self.is_goal(goal) {
-                self.nodes[goal].h = 0.0;
-                self.nodes[goal].effort = 0;
+                self.graph.nodes[goal].ext.h = 0.0;
+                self.graph.nodes[goal].ext.effort = 0;
                 self.expand_reverse(goal, None);
             }
         }
@@ -41,17 +41,17 @@ where
     /// Queues the reverse edges from `source` to its neighbors, except `skip` and neighbors
     /// whose admissible solution cost cannot beat the current solution.
     fn expand_reverse(&mut self, source: usize, skip: Option<usize>) {
-        self.ensure_adjacent(source);
+        self.graph.ensure_adjacent(source);
 
-        for index in 0..self.nodes[source].adjacent.len() {
-            let target = self.nodes[source].adjacent[index];
+        for index in 0..self.graph.nodes[source].links.adjacent.len() {
+            let target = self.graph.nodes[source].links.adjacent[index];
 
-            if Some(target) == skip || self.nodes[target].kind == Kind::Pruned {
+            if Some(target) == skip || self.graph.nodes[target].kind == Kind::Pruned {
                 continue;
             }
 
             let entry = self.reverse_entry(source, target);
-            if self.best_cost.is_finite() && entry.key[0] > self.best_cost {
+            if self.graph.best_cost.is_finite() && entry.key[0] > self.graph.best_cost {
                 continue;
             }
 
@@ -62,14 +62,15 @@ where
     /// The queue entry of the reverse edge from `source` (closer to the goal) to `target`:
     /// `(h(s) + c_hat + g_hat(t), h(s) + c_hat, effort)`.
     fn reverse_entry(&self, source: usize, target: usize) -> EdgeEntry {
-        let to_go = self.nodes[source].h + self.cost_estimate(target, source);
-        let effort = self.nodes[source]
+        let to_go = self.graph.nodes[source].ext.h + self.graph.cost_estimate(target, source);
+        let effort = self.graph.nodes[source]
+            .ext
             .effort
             .saturating_add(self.remaining_checks(target, source));
 
         EdgeEntry {
             key: [
-                to_go + self.nodes[target].g_hat,
+                to_go + self.graph.nodes[target].g_hat,
                 to_go,
                 count_to_f64(effort),
             ],
@@ -92,14 +93,15 @@ where
         let target = edge.1;
         let closed_and_better = self.is_closed(target) && self.forward_lower_bound() < reverse_top;
         let all_closed = self.open_targets == 0;
-        let reached = self.config.suboptimality.is_infinite() && self.nodes[target].h.is_finite();
+        let reached =
+            self.config.suboptimality.is_infinite() && self.graph.nodes[target].ext.h.is_finite();
 
         !(closed_and_better || all_closed || reached)
     }
 
     /// Whether state `id` was expanded in the running reverse search.
     pub(super) fn is_closed(&self, id: usize) -> bool {
-        self.nodes[id].closed_tag == self.reverse_tag
+        self.graph.nodes[id].ext.closed_tag == self.reverse_tag
     }
 
     /// Processes the best reverse edge (OMPL's `iterateReverseSearch`): closes its source and
@@ -113,7 +115,7 @@ where
         let (source, target) = (entry.from, entry.to);
         self.close(source);
 
-        if self.nodes[target].reverse_parent == Some(source) {
+        if self.graph.nodes[target].ext.reverse_parent == Some(source) {
             self.expand_reverse(target, Some(source));
             return;
         }
@@ -131,18 +133,19 @@ where
             return;
         }
 
-        let to_go = self.nodes[source].h + self.cost_estimate(target, source);
-        if to_go >= self.nodes[target].h {
+        let to_go = self.graph.nodes[source].ext.h + self.graph.cost_estimate(target, source);
+        if to_go >= self.graph.nodes[target].ext.h {
             return;
         }
 
-        let effort = self.nodes[source]
+        let effort = self.graph.nodes[source]
+            .ext
             .effort
             .saturating_add(self.remaining_checks(target, source));
-        let node = &mut self.nodes[target];
-        node.reverse_parent = Some(source);
-        node.h = to_go;
-        node.effort = node.effort.min(effort);
+        let node = &mut self.graph.nodes[target];
+        node.ext.reverse_parent = Some(source);
+        node.ext.h = to_go;
+        node.ext.effort = node.ext.effort.min(effort);
         self.refresh_forward_into(target);
         self.expand_reverse(target, Some(source));
     }
@@ -150,13 +153,14 @@ where
     /// Closes state `id` in the running reverse search.
     fn close(&mut self, id: usize) {
         if !self.is_closed(id) {
-            self.nodes[id].closed_tag = self.reverse_tag;
-            self.open_targets -= self.nodes[id].incoming.len();
+            self.graph.nodes[id].ext.closed_tag = self.reverse_tag;
+            self.open_targets -= self.graph.nodes[id].ext.incoming.len();
         }
     }
 
     /// Whether the forward edge from `from` to `to` is an edge of the reverse tree.
     pub(super) fn is_in_reverse_tree(&self, from: usize, to: usize) -> bool {
-        self.nodes[from].reverse_parent == Some(to) || self.nodes[to].reverse_parent == Some(from)
+        self.graph.nodes[from].ext.reverse_parent == Some(to)
+            || self.graph.nodes[to].ext.reverse_parent == Some(from)
     }
 }

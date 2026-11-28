@@ -4,7 +4,7 @@ use core::num::NonZeroUsize;
 
 use rand_core::Rng;
 
-use super::{Error, retirement::Retirement, tree::Tree};
+use super::{Error, growth::IndexedTree};
 use crate::{
     LinearScan, NearestNeighbors, Path, Problem, RemovableNeighbors, Sampler, StateSpace, Steering,
     ValidityChecker,
@@ -29,17 +29,6 @@ impl Side {
     }
 }
 
-/// One tree with its nearest-neighbor index.
-#[derive(Clone)]
-struct Half<S, N> {
-    /// The tree, rooted at the start or the goal center.
-    tree: Tree<S>,
-    /// Index over the tree's nodes, by node id.
-    nn: N,
-    /// Removes vertices that keep failing to extend from `nn`; disabled by default.
-    retirement: Retirement<N>,
-}
-
 /// RRT-Connect: grows one tree from the start and one from the goal center, and after every
 /// extension of one tree greedily steers the other tree toward the new node until it either
 /// reaches it or hits an obstacle.
@@ -48,8 +37,9 @@ struct Half<S, N> {
 /// passages near the endpoints, but, like RRT, does not improve them; run
 /// [`shortcut`](crate::shortcut()) on the result.
 ///
-/// The goal tree is rooted at [`GoalRegion::center`](crate::GoalRegion::center), so the
-/// returned path ends there. Its edges are traveled toward the root, so they are checked in that
+/// The goal tree is rooted at [`GoalRegion::center`](crate::GoalRegion::center), so a path
+/// found where the trees meet ends there; a path whose start-tree branch enters the goal region
+/// first ends at that branch's state in the region. Its edges are traveled toward the root, so they are checked in that
 /// direction: a new goal-tree state gets [`ValidityChecker::check_state`] and then
 /// [`ValidityChecker::check_motion`] from itself to its parent.
 ///
@@ -98,9 +88,9 @@ pub struct RrtConnect<Sp: StateSpace, Sa, C, St, N = LinearScan<<Sp as StateSpac
     /// The problem being solved.
     problem: Problem<Sp, Sa, C, St>,
     /// The tree rooted at the start.
-    start: Half<Sp::State, N>,
+    start: IndexedTree<Sp::State, N>,
     /// The tree rooted at the goal center.
-    goal: Half<Sp::State, N>,
+    goal: IndexedTree<Sp::State, N>,
     /// The tree that extends toward the next sample; alternates every iteration.
     active: Side,
     /// The first solution found, if any.
@@ -159,8 +149,8 @@ where
             });
 
         Ok(Self {
-            start: Half::rooted(problem.start.clone(), nn.clone()),
-            goal: Half::rooted(problem.goal.center().clone(), nn),
+            start: IndexedTree::rooted(problem.start.clone(), nn.clone()),
+            goal: IndexedTree::rooted(problem.goal.center().clone(), nn),
             problem,
             active: Side::Start,
             solution,
@@ -226,7 +216,7 @@ where
     }
 
     /// The tree on `side`.
-    const fn half(&self, side: Side) -> &Half<Sp::State, N> {
+    const fn half(&self, side: Side) -> &IndexedTree<Sp::State, N> {
         match side {
             Side::Start => &self.start,
             Side::Goal => &self.goal,
@@ -248,18 +238,16 @@ where
         let space = &self.problem.space;
         let tree = &self.half(side).tree;
         let new = self.problem.steering.steer(space, tree.state(from), target);
-        let valid = self.is_edge_valid(side, from, &new);
+        // A zero-length step (steering stopped short) would only add a duplicate node.
+        let valid =
+            space.distance(tree.state(from), &new) > 0.0 && self.is_edge_valid(side, from, &new);
         let half = match side {
             Side::Start => &mut self.start,
             Side::Goal => &mut self.goal,
         };
         let id = valid.then(|| {
             let cost = half.tree.cost(from) + space.distance(half.tree.state(from), &new);
-            let id = half.tree.add(new.clone(), from, cost);
-            half.retirement.note_added::<Sp>(id, new.clone());
-            half.nn.insert(id, new.clone());
-
-            id
+            half.add(new.clone(), from, cost)
         });
 
         half.record_extension(space, &self.problem.steering, from, &new, valid);
@@ -268,20 +256,39 @@ where
     }
 
     /// Greedily steers `side` toward node `target` of tree `target_side` until it reaches the
-    /// node (and records the solution) or an edge is not valid.
+    /// node (and records the solution), an edge is not valid or a step gets no closer.
     fn connect(&mut self, side: Side, target: usize, target_side: Side) {
         let goal = self.half(target_side).tree.state(target).clone();
         let mut current = self.nearest(side, &goal);
+        let mut gap = self
+            .problem
+            .space
+            .distance(self.half(side).tree.state(current), &goal);
+
+        // A node already at the target meets it; a zero-length step would not be added.
+        if gap <= 0.0 {
+            self.record_meeting(side, current, target);
+            return;
+        }
 
         while let Some(next) = self.step_from(side, current, &goal) {
-            let reached = self.half(side).tree.state(next);
+            let reached = self
+                .problem
+                .space
+                .distance(self.half(side).tree.state(next), &goal);
 
-            if self.problem.space.distance(reached, &goal) <= 0.0 {
+            if reached <= 0.0 {
                 self.record_meeting(side, next, target);
                 return;
             }
 
+            // Steering that gets no closer (a lattice bouncing around the target) never meets.
+            if reached >= gap {
+                return;
+            }
+
             current = next;
+            gap = reached;
         }
     }
 
@@ -327,7 +334,7 @@ where
         self.half(side)
             .nn
             .nearest(&self.problem.space, target)
-            .expect("each tree always holds its root")
+            .expect(crate::nearest::NO_NEAREST)
     }
 
     /// Whether the edge between node `parent` on `side` and the new state `new` is valid in
@@ -367,51 +374,6 @@ where
     }
 }
 
-impl<S: Clone, N> Half<S, N> {
-    /// Feeds vertex retirement with the extension from `from` to `to`, like
-    /// `Growth::record_extension`.
-    fn record_extension<Sp, St>(
-        &mut self,
-        space: &Sp,
-        steering: &St,
-        from: usize,
-        to: &S,
-        valid: bool,
-    ) where
-        Sp: StateSpace<State = S>,
-        St: Steering<Sp>,
-        N: NearestNeighbors<Sp>,
-    {
-        if !self.retirement.is_enabled() {
-            return;
-        }
-
-        let from_state = self.tree.state(from);
-        let progressed = valid && space.distance(from_state, to) > 0.0;
-        self.retirement.record(&mut self.nn, from, progressed);
-
-        if let Some(successors) = steering.successors(space, from_state) {
-            self.retirement
-                .retire_if_exhausted(&mut self.nn, space, from, &successors);
-        }
-    }
-
-    /// A tree holding only `root`, indexed as node `0` in the empty index `nn`.
-    fn rooted<Sp>(root: S, mut nn: N) -> Self
-    where
-        Sp: StateSpace<State = S>,
-        N: NearestNeighbors<Sp>,
-    {
-        nn.insert(0, root.clone());
-
-        Self {
-            tree: Tree::new(root),
-            nn,
-            retirement: Retirement::disabled(),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -436,6 +398,26 @@ mod tests {
                 discretized_motion(space, from, to, 0.1, |_| Validity::Valid)
             }
         }
+    }
+
+    #[test]
+    fn trees_meet_where_a_node_already_sits_on_the_target() {
+        // Every sample is the start: the goal tree reaches it in one long step, and the start
+        // tree's root, already there, must count as the meeting.
+        let problem = Problem {
+            space: Euclidean::<1>,
+            sampler: UniformBox::new([1.0], [1.0]),
+            checker: OneWay,
+            steering: StraightLine::new(100.0),
+            start: [1.0],
+            goal: GoalRegion::new([9.0], 0.1),
+        };
+        let mut planner = RrtConnect::new(problem).expect("valid");
+        let path = planner
+            .solve(10, &mut rand_pcg::Pcg64Mcg::seed_from_u64(1))
+            .expect("the trees meet at the start");
+
+        assert_eq!(path.states, [[1.0], [9.0]]);
     }
 
     #[test]

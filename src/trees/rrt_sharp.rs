@@ -4,7 +4,11 @@ use alloc::{collections::BinaryHeap, vec::Vec};
 
 use rand_core::Rng;
 
-use super::{Error, RrtStarConfig, targets::draw_target};
+use super::{
+    Error, RrtStarConfig,
+    growth::{is_extension_valid, validate},
+    targets::draw_target,
+};
 use crate::graph::Entry;
 use crate::{
     LinearScan, NearestNeighbors, Path, Problem, Sampler, StateSpace, Steering, ValidityChecker,
@@ -122,8 +126,6 @@ pub struct RrtSharp<Sp: StateSpace, Sa, C, St, N = LinearScan<<Sp as StateSpace>
     nn: N,
     /// Vertices with `lmc < g`, keyed by `lmc + h` at push time; stale entries are skipped.
     queue: BinaryHeap<Entry>,
-    /// Vertices inside the goal region.
-    goal_vertices: Vec<usize>,
     /// The goal vertex with the lowest committed cost `g`, if any is reached.
     best_goal: Option<usize>,
     /// Reused buffer for neighbor queries.
@@ -170,15 +172,7 @@ where
         mut nn: N,
     ) -> Result<Self, Error> {
         config.validate()?;
-
-        if !(0.0..=1.0).contains(&config.goal_bias) {
-            return Err(Error::GoalBiasOutOfRange);
-        }
-
-        let validity = problem.checker.check_state(&problem.start);
-        if !validity.is_valid() {
-            return Err(Error::InvalidStart(validity));
-        }
+        validate(&problem, config.goal_bias)?;
 
         let start = problem.start.clone();
         let in_goal = problem.goal.contains(&problem.space, &start);
@@ -193,7 +187,6 @@ where
                 parent: None,
                 out: Vec::new(),
             }],
-            goal_vertices: if in_goal { alloc::vec![0] } else { Vec::new() },
             best_goal: in_goal.then_some(0),
             problem,
             config,
@@ -232,15 +225,11 @@ where
         let nearest = self
             .nn
             .nearest(space, &target)
-            .expect("the graph always holds the start");
+            .expect(crate::nearest::NO_NEAREST);
         let from = &self.vertices[nearest].state;
         let new = self.problem.steering.steer(space, from, &target);
 
-        self.problem
-            .checker
-            .check_motion(space, from, &new)
-            .is_valid()
-            .then_some((nearest, new))
+        is_extension_valid(space, &self.problem.checker, from, &new).then_some((nearest, new))
     }
 
     /// The informed-set bound `c_best + tolerance`, or `None` when informed sampling is off or
@@ -284,10 +273,6 @@ where
         });
         self.link(id, nearest, &near);
         self.choose_parent(id);
-
-        if self.problem.goal.contains(&self.problem.space, &state) {
-            self.goal_vertices.push(id);
-        }
 
         self.nn.insert(id, state);
         self.near = near;
@@ -548,7 +533,7 @@ mod tests {
         let route = shortest_path(
             vertices.len(),
             0,
-            |id| planner.goal_vertices.contains(&id),
+            |id| planner.problem.goal.contains(&space, &vertices[id].state),
             |id, out: &mut Vec<Arc>| {
                 out.clear();
                 out.extend(

@@ -145,3 +145,29 @@ fn finite_steering_retires_vertices_whose_successors_are_all_in_the_tree() {
         planner.retired_count()
     );
 }
+
+#[test]
+fn connecting_stops_when_steering_bounces_around_the_target() {
+    // The goal tree's lattice is offset by 0.5, so the start tree hops 8.5, 9.5, 8.5, ...
+    // around goal-tree states and never reaches one; connecting must give up, not loop.
+    let problem = Problem {
+        space: Euclidean::<2>,
+        sampler: UniformBox::new([0.0; 2], [10.0; 2]),
+        checker: crate::world::Boxes::default(),
+        steering: Lattice,
+        start: [1.5, 1.0],
+        goal: GoalRegion::new([9.0, 1.0], 0.1),
+    };
+    let mut planner = RrtConnect::new(problem).expect("valid problem");
+    let mut rng = Pcg64Mcg::seed_from_u64(1);
+
+    for _ in 0..200 {
+        planner.step(&mut rng);
+    }
+
+    assert!(
+        planner.node_count() < 10_000,
+        "{} nodes",
+        planner.node_count()
+    );
+}

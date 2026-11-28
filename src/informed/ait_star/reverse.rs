@@ -20,15 +20,15 @@ where
     pub(super) fn restart_reverse_search(&mut self) {
         self.reverse_queue.clear();
 
-        for node in &mut self.nodes {
-            node.h_con = f64::INFINITY;
-            node.h_exp = f64::INFINITY;
-            node.reverse_key = None;
+        for node in &mut self.graph.nodes {
+            node.ext.h_con = f64::INFINITY;
+            node.ext.h_exp = f64::INFINITY;
+            node.ext.reverse_key = None;
         }
 
-        for x in 0..self.nodes.len() {
+        for x in 0..self.graph.nodes.len() {
             if self.is_reverse_root(x) {
-                self.nodes[x].h_con = 0.0;
+                self.graph.nodes[x].ext.h_con = 0.0;
                 self.queue_state(x);
             }
         }
@@ -36,18 +36,22 @@ where
 
     /// Whether `x` is a goal of the reverse search: a live state in the goal region.
     fn is_reverse_root(&self, x: usize) -> bool {
-        self.nodes[x].kind != Kind::Pruned && self.nodes[x].in_goal()
+        self.graph.nodes[x].kind != Kind::Pruned && self.graph.nodes[x].in_goal()
     }
 
     /// Whether `x` has `h_con == h_exp`.
     pub(super) fn is_consistent(&self, x: usize) -> bool {
-        self.nodes[x].h_con.total_cmp(&self.nodes[x].h_exp).is_eq()
+        self.graph.nodes[x]
+            .ext
+            .h_con
+            .total_cmp(&self.graph.nodes[x].ext.h_exp)
+            .is_eq()
     }
 
     /// The LPA* key of `x`: `(min(h_con, h_exp) + g_hat, min(h_con, h_exp))`.
     fn reverse_key(&self, x: usize) -> [f64; 2] {
-        let node = &self.nodes[x];
-        let h = node.h_con.min(node.h_exp);
+        let node = &self.graph.nodes[x];
+        let h = node.ext.h_con.min(node.ext.h_exp);
 
         [h + node.g_hat, h]
     }
@@ -56,11 +60,11 @@ where
     fn queue_state(&mut self, x: usize) {
         let key = self.reverse_key(x);
 
-        if self.nodes[x].reverse_key == Some(key) {
+        if self.graph.nodes[x].ext.reverse_key == Some(key) {
             return;
         }
 
-        self.nodes[x].reverse_key = Some(key);
+        self.graph.nodes[x].ext.reverse_key = Some(key);
         self.reverse_queue.push(VertexEntry {
             key: key[0],
             cost: key[1],
@@ -71,7 +75,7 @@ where
     /// The best live reverse-queue entry, dropping stale entries on the way.
     pub(super) fn peek_state(&mut self) -> Option<VertexEntry> {
         while let Some(&entry) = self.reverse_queue.peek() {
-            if self.nodes[entry.vertex].reverse_key == Some([entry.key, entry.cost]) {
+            if self.graph.nodes[entry.vertex].ext.reverse_key == Some([entry.key, entry.cost]) {
                 return Some(entry);
             }
 
@@ -107,22 +111,22 @@ where
     /// raised one only affects neighbors whose `h_con` was that route.
     pub(super) fn expand_state(&mut self, x: usize) {
         self.reverse_queue.pop();
-        self.nodes[x].reverse_key = None;
+        self.graph.nodes[x].ext.reverse_key = None;
 
-        self.ensure_adjacent(x);
-        let neighbors = core::mem::take(&mut self.nodes[x].adjacent);
-        let node = &mut self.nodes[x];
-        let overconsistent = node.h_con < node.h_exp;
+        self.graph.ensure_adjacent(x);
+        let neighbors = core::mem::take(&mut self.graph.nodes[x].links.adjacent);
+        let node = &mut self.graph.nodes[x];
+        let overconsistent = node.ext.h_con < node.ext.h_exp;
 
         if overconsistent {
-            node.h_exp = node.h_con;
+            node.ext.h_exp = node.ext.h_con;
             self.lower_neighbors(x, &neighbors);
         } else {
-            let old = core::mem::replace(&mut node.h_exp, f64::INFINITY);
+            let old = core::mem::replace(&mut node.ext.h_exp, f64::INFINITY);
             self.raise_neighbors(x, old, &neighbors);
         }
 
-        self.nodes[x].adjacent = neighbors;
+        self.graph.nodes[x].links.adjacent = neighbors;
 
         if !overconsistent {
             self.update_state(x);
@@ -131,16 +135,16 @@ where
 
     /// Offers every neighbor `y` of the just-lowered `x` the route through `x`.
     fn lower_neighbors(&mut self, x: usize, neighbors: &[usize]) {
-        let h_exp = self.nodes[x].h_exp;
+        let h_exp = self.graph.nodes[x].ext.h_exp;
 
         for &y in neighbors {
             if self.is_invalid(y, x) || self.is_reverse_root(y) {
                 continue;
             }
 
-            let through = h_exp + self.cost_estimate(y, x);
+            let through = h_exp + self.graph.cost_estimate(y, x);
 
-            if through < self.nodes[y].h_con {
+            if through < self.graph.nodes[y].ext.h_con {
                 self.set_h_con(y, through);
             }
         }
@@ -154,9 +158,9 @@ where
                 continue;
             }
 
-            let through = old + self.cost_estimate(y, x);
+            let through = old + self.graph.cost_estimate(y, x);
 
-            if through.total_cmp(&self.nodes[y].h_con).is_eq() {
+            if through.total_cmp(&self.graph.nodes[y].ext.h_con).is_eq() {
                 self.update_state(y);
             }
         }
@@ -169,12 +173,13 @@ where
             return;
         }
 
-        self.ensure_adjacent(x);
-        let h_con = self.nodes[x]
+        self.graph.ensure_adjacent(x);
+        let h_con = self.graph.nodes[x]
+            .links
             .adjacent
             .iter()
             .filter(|&&y| !self.is_invalid(x, y))
-            .map(|&y| self.nodes[y].h_exp + self.cost_estimate(x, y))
+            .map(|&y| self.graph.nodes[y].ext.h_exp + self.graph.cost_estimate(x, y))
             .fold(f64::INFINITY, f64::min);
 
         self.set_h_con(x, h_con);
@@ -183,13 +188,13 @@ where
     /// Sets `h_con[x]`, re-keys the forward edges into `x` if it changed, and queues or
     /// dequeues `x` by its consistency.
     fn set_h_con(&mut self, x: usize, h_con: f64) {
-        if h_con.total_cmp(&self.nodes[x].h_con).is_ne() {
-            self.nodes[x].h_con = h_con;
+        if h_con.total_cmp(&self.graph.nodes[x].ext.h_con).is_ne() {
+            self.graph.nodes[x].ext.h_con = h_con;
             self.rekey_incoming(x);
         }
 
         if self.is_consistent(x) {
-            self.nodes[x].reverse_key = None;
+            self.graph.nodes[x].ext.reverse_key = None;
         } else {
             self.queue_state(x);
         }
@@ -198,7 +203,7 @@ where
     /// Records the invalid motion from `v` to `x` and repairs the reverse search around it
     /// (Algorithm 5, lines 7 to 9); the repair itself runs lazily before the next edge.
     pub(super) fn update_heuristic(&mut self, v: usize, x: usize) {
-        self.nodes[v].invalid.push(x);
+        self.graph.nodes[v].ext.invalid.push(x);
         self.update_state(v);
     }
 }

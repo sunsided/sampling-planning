@@ -25,7 +25,7 @@ impl<const N: usize> UniformBox<N> {
     ///
     /// # Panics
     ///
-    /// Panics if any bound is not finite or `lower > upper` on any axis.
+    /// Panics if any bound or extent `upper - lower` is not finite, or `lower > upper` on any axis.
     #[must_use]
     pub fn new(lower: [f64; N], upper: [f64; N]) -> Self {
         for (lo, hi) in lower.iter().zip(&upper) {
@@ -34,6 +34,7 @@ impl<const N: usize> UniformBox<N> {
                 "box bounds must be finite"
             );
             assert!(lo <= hi, "box lower bound exceeds upper bound");
+            assert!((hi - lo).is_finite(), "box extent must be finite");
         }
 
         Self {
@@ -209,6 +210,12 @@ mod tests {
     use super::*;
     use crate::Euclidean;
     use rand_core::SeedableRng;
+
+    #[test]
+    #[should_panic(expected = "box extent must be finite")]
+    fn an_overflowing_extent_is_rejected() {
+        let _ = UniformBox::new([-f64::MAX], [f64::MAX]);
+    }
 
     #[test]
     fn samples_stay_in_box() {

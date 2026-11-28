@@ -381,3 +381,79 @@ fn rrt_sharp_variants_match_across_indices_and_stay_valid() {
         assert_eq!(Some(path), kd.best_path());
     }
 }
+
+#[test]
+fn reaching_the_goal_center_again_adds_no_duplicate_nodes() {
+    let free = || problem(Boxes::default());
+    let mut rng = Pcg64Mcg::seed_from_u64(1);
+    // Every target is the goal center, about 11.3 steps away: once reached, steps stand still.
+    let mut rrt = Rrt::new(free(), RrtConfig { goal_bias: 1.0 }).expect("valid problem");
+    rrt.run(1000, &mut rng);
+    assert!(rrt.node_count() < 20, "RRT: {} nodes", rrt.node_count());
+
+    let config = RrtStarConfig {
+        goal_bias: 1.0,
+        ..star_config()
+    };
+    let mut star = RrtStar::new(free(), config).expect("valid problem");
+    star.run(1000, &mut rng);
+    assert!(star.node_count() < 20, "RRT*: {} nodes", star.node_count());
+
+    let mut sharp = RrtSharp::new(free(), config).expect("valid problem");
+    sharp.run(1000, &mut rng);
+    assert!(
+        sharp.node_count() < 20,
+        "RRT#: {} nodes",
+        sharp.node_count()
+    );
+}
+
+/// The plane with a broken metric: every distance is NaN.
+#[derive(Debug, Clone, Copy)]
+struct NanPlane;
+
+impl sampling_planning::StateSpace for NanPlane {
+    type State = [f64; 2];
+
+    fn dimension(&self) -> usize {
+        2
+    }
+
+    fn distance(&self, _: &[f64; 2], _: &[f64; 2]) -> f64 {
+        f64::NAN
+    }
+
+    fn interpolate(&self, from: &[f64; 2], to: &[f64; 2], t: f64) -> [f64; 2] {
+        Euclidean::<2>.interpolate(from, to, t)
+    }
+}
+
+/// Free space for [`NanPlane`].
+struct FreePlane;
+
+impl sampling_planning::ValidityChecker<NanPlane> for FreePlane {
+    fn check_state(&self, _: &[f64; 2]) -> Validity {
+        Validity::Valid
+    }
+
+    fn check_motion(&self, _: &NanPlane, _: &[f64; 2], _: &[f64; 2]) -> Validity {
+        Validity::Valid
+    }
+}
+
+#[test]
+#[should_panic(expected = "StateSpace::distance returned NaN for every node")]
+fn a_nan_metric_panics_with_a_message_that_names_it() {
+    let world = problem(Boxes::default());
+    let problem = Problem {
+        space: NanPlane,
+        sampler: world.sampler,
+        checker: FreePlane,
+        steering: world.steering,
+        start: world.start,
+        goal: world.goal,
+    };
+    let mut rrt = Rrt::new(problem, RrtConfig::default()).expect("valid problem");
+
+    rrt.step(&mut Pcg64Mcg::seed_from_u64(1));
+}

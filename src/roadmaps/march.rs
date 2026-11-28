@@ -110,15 +110,15 @@ pub(super) struct Wave {
     pub(super) status: Vec<Status>,
     /// Cost-to-root of connected nodes in travel direction; infinite for unconnected ones.
     pub(super) cost: Vec<f64>,
-    /// Tree parent of connected nodes; `None` for the root and unconnected nodes.
+    /// Tree parent of connected nodes; `None` for the roots and unconnected nodes.
     pub(super) parent: Vec<Option<usize>>,
     /// The open set ordered by cost, then id; closed entries are skipped when popped.
     open: BinaryHeap<Entry>,
 }
 
 impl Wave {
-    /// A wave over `n` nodes with only `root` connected and open.
-    pub(super) fn new(n: usize, root: usize, direction: Direction) -> Self {
+    /// A wave over `n` nodes with only `roots` connected and open, each at cost zero.
+    pub(super) fn new(n: usize, roots: &[usize], direction: Direction) -> Self {
         let mut wave = Self {
             direction,
             status: alloc::vec![Status::Unvisited; n],
@@ -126,12 +126,15 @@ impl Wave {
             parent: alloc::vec![None; n],
             open: BinaryHeap::new(),
         };
-        wave.status[root] = Status::Open;
-        wave.cost[root] = 0.0;
-        wave.open.push(Entry {
-            cost: 0.0,
-            node: root,
-        });
+
+        for &root in roots {
+            wave.status[root] = Status::Open;
+            wave.cost[root] = 0.0;
+            wave.open.push(Entry {
+                cost: 0.0,
+                node: root,
+            });
+        }
 
         wave
     }
