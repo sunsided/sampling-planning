@@ -98,10 +98,23 @@ impl<S: Clone> Tree<S> {
         }
     }
 
-    /// All states in insertion order, the root first; parents come before their children.
+    /// Every node as `(id, state, parent id)` in breadth-first order from the root, so each
+    /// parent comes before its children. Insertion order does not guarantee that: rewiring
+    /// can move a node under one added after it.
     #[cfg(feature = "parallel")]
-    pub(super) fn states(&self) -> impl Iterator<Item = &S> {
-        self.nodes.iter().map(|node| &node.state)
+    pub(super) fn breadth_first(&self) -> Vec<(usize, &S, Option<usize>)> {
+        let mut order = alloc::vec![0];
+        let mut next = 0;
+
+        while let Some(&id) = order.get(next) {
+            order.extend(&self.nodes[id].children);
+            next += 1;
+        }
+
+        order
+            .into_iter()
+            .map(|id| (id, &self.nodes[id].state, self.nodes[id].parent))
+            .collect()
     }
 
     /// The states from the root to node `id`.

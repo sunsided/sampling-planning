@@ -335,19 +335,27 @@ where
     }
 
     #[cfg(feature = "parallel")]
-    /// Adds the states of another tree over the same problem, in that tree's insertion order
-    /// (parents before children), each like a new RRT* node: connected to the cheapest of its
-    /// neighbors with a valid motion, then rewiring them. States without such a neighbor are
-    /// dropped. Costs never increase, so the best path never gets worse.
-    pub(super) fn absorb(&mut self, states: impl IntoIterator<Item = Sp::State>) {
+    /// Adds the nodes of `other`, a tree over the same problem, parents before children, each
+    /// like a new RRT* node: connected to the cheapest valid candidate among its neighbors and
+    /// its own parent from `other` (already merged, and an edge `other` checked), then
+    /// rewiring its neighbors. A node is dropped only if even that edge fails its check now.
+    /// Costs never increase, so the best path never gets worse.
+    pub(super) fn absorb(&mut self, other: &Self) {
         let mut near = core::mem::take(&mut self.near);
+        let nodes = other.growth.tree.breadth_first();
+        // Merged id of each node of `other`; both roots are the start.
+        let mut merged: Vec<Option<usize>> = alloc::vec![None; nodes.len()];
+        merged[0] = Some(0);
 
-        for state in states {
-            self.neighbors(&state, &mut near);
+        for (id, state, parent) in nodes.into_iter().skip(1) {
+            self.neighbors(state, &mut near);
+            let own_parent = parent.and_then(|parent| merged[parent]);
+            near.extend(own_parent.filter(|parent| !near.contains(parent)));
 
-            if let Some((parent, cost)) = self.cheapest_valid_parent(&state, &near) {
-                let id = self.growth.add(state, parent, cost);
-                self.rewire(id, &near);
+            if let Some((parent, cost)) = self.cheapest_valid_parent(state, &near) {
+                let new = self.growth.add(state.clone(), parent, cost);
+                merged[id] = Some(new);
+                self.rewire(new, &near);
             }
         }
 
@@ -367,12 +375,6 @@ where
         candidates
             .into_iter()
             .find(|&(id, _)| self.growth.is_motion_valid(id, state))
-    }
-
-    #[cfg(feature = "parallel")]
-    /// The states of the tree in insertion order, the root first.
-    pub(super) fn tree_states(&self) -> Vec<Sp::State> {
-        self.growth.tree.states().cloned().collect()
     }
 
     /// The cheapest parent for `new` among `nearest` and `near`, with its resulting cost.

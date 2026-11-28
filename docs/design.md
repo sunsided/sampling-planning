@@ -173,13 +173,15 @@ contiguous chunks of unequal edge lengths limit the speedup.
 Parallel tree growth is a forest merged later (`trees::grow_forest`, feature
 `parallel`): an RRT iteration depends on the tree the previous one left, so
 threads do not share a tree. Each thread grows its own RRT* tree from the start
-with its own RNG; then the other trees' states, tree by tree in insertion order
-(parents first), are inserted into the first tree like new RRT* nodes: the
-cheapest neighbor with a valid motion becomes the parent (checked in cost
-order), then the neighbors are rewired; states without one are dropped. No
-locks, results independent of scheduling, and the merged best path costs at
-most as much as the first tree's, since RRT* costs only decrease. A test pins
-all three on the slalom.
+with its own RNG; then the other trees' nodes, tree by tree and breadth-first
+(parents first; insertion order is not, after rewiring), are inserted into the
+first tree like new RRT* nodes: the cheapest valid candidate becomes the parent
+(checked in cost order), then the neighbors are rewired. The candidates are the
+node's neighbors plus its parent from its own tree, already merged and an edge
+that tree checked, so no node is lost with a deterministic checker. No locks,
+results independent of scheduling, and the merged best path costs at most as
+much as the first tree's, since RRT* costs only decrease. A test pins all four
+on the slalom.
 
 ### `NearestNeighbors`
 

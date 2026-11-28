@@ -151,7 +151,21 @@ mod parallel {
 
         let path = merged.best_path().expect("the forest solves the slalom");
         assert_solves(&slalom(), &path);
-        assert!(merged.node_count() > 3 * alone.node_count());
+
+        // Every node of every tree survives the merge: its own parent is a valid candidate.
+        let total: usize = (0..4)
+            .map(|seed| {
+                let mut tree = RrtStar::with_nearest_neighbors(slalom(), config, KdTree::default())
+                    .expect("valid problem");
+                tree.run(1500, &mut Pcg64Mcg::seed_from_u64(seed));
+                tree.node_count()
+            })
+            .sum();
+        assert_eq!(
+            merged.node_count(),
+            total - 3,
+            "all nodes kept, roots shared"
+        );
         assert!(path.cost <= alone.best_path().map_or(f64::INFINITY, |best| best.cost));
         assert_eq!(
             forest(&mut rngs()).best_path(),

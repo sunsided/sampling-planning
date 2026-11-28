@@ -15,9 +15,11 @@ use crate::{
 ///
 /// Every tree starts at the problem's start and grows from clones of `problem`, the empty
 /// index `nn` and `objective` with its own RNG, so the trees explore independently. The merge adds the
-/// states of the other trees to the first one in order (tree by tree, each in insertion
-/// order), each connected like a new RRT* node to its cheapest neighbor with a valid motion
-/// and then rewiring its neighbors; states without such a neighbor are dropped. The result
+/// nodes of the other trees to the first one, tree by tree and each parents first, each
+/// connected like a new RRT* node to the cheapest valid candidate among its neighbors and its
+/// parent from its own tree (an edge that tree already checked), then rewiring its
+/// neighbors. So every node is kept, unless the checker rejects an edge it accepted before
+/// (a checker that is not deterministic). The result
 /// depends only on the RNGs, never on thread scheduling, and its best path costs at most as
 /// much as the first tree's. With `n` RNGs the work of `n * iterations` iterations runs in
 /// about the time of `iterations` plus the merge, which costs one RRT* insertion per merged
@@ -120,9 +122,8 @@ where
     });
 
     let mut merged = trees.remove(0);
-    for tree in trees {
-        // The root is the start, already in the merged tree.
-        merged.absorb(tree.tree_states().into_iter().skip(1));
+    for tree in &trees {
+        merged.absorb(tree);
     }
 
     Ok(merged)
