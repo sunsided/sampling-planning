@@ -12,7 +12,7 @@ use rand_core::Rng;
 
 use super::{
     Error,
-    sparse::{GuardKind, SparseGraph},
+    sparse::{GuardKind, SparseGraph, is_edge_valid, validate_ranges},
 };
 use crate::radius::k_constant_lower_bound;
 use crate::{GoalRegion, LinearScan, NearestNeighbors, Path, Sampler, StateSpace, ValidityChecker};
@@ -57,18 +57,7 @@ impl SparsConfig {
 
     /// Checks every field against its documented range.
     fn validate(&self) -> Result<(), Error> {
-        let positive = |value: f64| value.is_finite() && value > 0.0;
-        let valid = positive(self.sparse_delta)
-            && positive(self.dense_delta)
-            && self.dense_delta < self.sparse_delta
-            && self.stretch.is_finite()
-            && self.stretch > 1.0;
-
-        if valid {
-            Ok(())
-        } else {
-            Err(Error::InvalidRadius)
-        }
+        validate_ranges(self.sparse_delta, self.dense_delta, self.stretch)
     }
 }
 
@@ -348,11 +337,9 @@ where
 
     /// Whether the motion between `a` and `b` checks as valid, both ways if configured.
     fn is_edge_valid(&self, a: &Sp::State, b: &Sp::State) -> bool {
-        let forward = self.checker.check_motion(&self.space, a, b).is_valid();
+        let both = self.config.check_both_directions;
 
-        forward
-            && (!self.config.check_both_directions
-                || self.checker.check_motion(&self.space, b, a).is_valid())
+        is_edge_valid(&self.space, &self.checker, a, b, both)
     }
 
     /// Whether the motion between guards `a` and `b` checks as valid.
@@ -419,18 +406,10 @@ where
         start: &Sp::State,
         goal: &GoalRegion<Sp::State>,
     ) -> Result<Option<Path<Sp::State>>, Error> {
-        let validity = self.checker.check_state(start);
-        if !validity.is_valid() {
-            return Err(Error::InvalidStart(validity));
-        }
+        let radius = self.config.sparse_delta;
 
-        Ok(self.graph.query(
-            &self.space,
-            &self.checker,
-            start,
-            goal,
-            self.config.sparse_delta,
-        ))
+        self.graph
+            .query(&self.space, &self.checker, start, goal, radius)
     }
 
     /// Whether `max_failures` consecutive valid samples failed all four criteria.
@@ -461,14 +440,7 @@ where
     /// quality.
     #[must_use]
     pub fn guard_counts(&self) -> [usize; 4] {
-        let count = |kind| self.graph.kinds.iter().filter(|&&k| k == kind).count();
-
-        [
-            count(GuardKind::Coverage),
-            count(GuardKind::Connectivity),
-            count(GuardKind::Interface),
-            count(GuardKind::Quality),
-        ]
+        self.graph.guard_counts()
     }
 }
 
