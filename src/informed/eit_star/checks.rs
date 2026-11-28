@@ -71,7 +71,10 @@ where
         let count = segments - 1;
         let key = undirected(from, to);
         let done = self.checks.performed.get(&key).copied().unwrap_or(0);
-        // The same density again, or a nested denser one: the first `done` points are checked.
+        // Nested grids (both counts one below a power of two) put the sparser grid's points
+        // first in bisection order. A denser check then skips the `done` points already
+        // checked; the same or a sparser one skips all of its points, which all passed (a
+        // failed check records the edge as invalid above).
         let nested = (done + 1).is_power_of_two() && (count + 1).is_power_of_two();
         let skip = if count == done || nested { done } else { 0 };
 
@@ -234,6 +237,19 @@ mod tests {
 
         assert!(short.could_be_valid(0, 1));
         assert_eq!(short.graph.checker.checks.get(), checked);
+    }
+
+    #[test]
+    fn a_sparser_check_after_a_denser_one_reuses_its_points() {
+        // Three checks (t = 1/4, 2/4, 3/4) on a long edge, then one (t = 1/2, among them): the
+        // check after a new batch reset the density checks nothing again.
+        let mut long = eit(Spot::new(3.0, 0.1), 10.0, 3);
+        assert!(long.could_be_valid(0, 1));
+        let checked = long.graph.checker.checks.get();
+        long.sparse_checks = 1;
+
+        assert!(long.could_be_valid(0, 1));
+        assert_eq!(long.graph.checker.checks.get(), checked);
     }
 
     #[test]
