@@ -23,6 +23,7 @@ where
     /// Queues the outgoing edges of vertex `v` to all its neighbors that are not known to be
     /// invalid (Algorithms 3 and 4).
     pub(super) fn expand(&mut self, v: usize) {
+        self.ensure_adjacent(v);
         let neighbors = core::mem::take(&mut self.nodes[v].adjacent);
 
         for &x in &neighbors {

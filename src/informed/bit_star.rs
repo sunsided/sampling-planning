@@ -546,7 +546,7 @@ where
         }
 
         let q = live.saturating_sub(sampled).max(2);
-        self.neighborhood = Neighborhood::for_batch(&self.config, q, self.space.dimension());
+        self.neighborhood = Neighborhood::for_batch(&self.config, q, self.space.dimension(), 1.0);
     }
 
     /// Queues vertex `v` for expansion.

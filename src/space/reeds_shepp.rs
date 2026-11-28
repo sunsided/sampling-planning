@@ -205,6 +205,10 @@ impl ReedsShepp {
 impl StateSpace for ReedsShepp {
     type State = Se2State;
 
+    fn is_symmetric(&self) -> bool {
+        true
+    }
+
     fn dimension(&self) -> usize {
         3
     }

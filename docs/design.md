@@ -220,7 +220,20 @@ removal is `O(log n)` amortized and memory tracks the live count. A rebuild
 keeps the relative insertion order, which is the tie-break rank; a re-inserted
 id counts as the newest node, as in `LinearScan`.
 
-Later: GNAT for general metrics.
+`VpTree<Sp>` covers every other metric space (SO(2), SE(2), SE(3),
+Reeds-Shepp): a vantage-point tree whose inner nodes split at the median
+distance to a vantage state and keep the distance range of each side, so a
+query skips a side when `max(lo - d, d - hi)` exceeds its bound (triangle
+inequality, padded by the same relative `1e-9`). It needs a symmetric metric
+(not `Dubins`). `insert` gets no space, so the tree owns a copy and builds
+with it: new states go to a scanned tail, folded in by a full rebuild once the
+tail is half the tree's size (`O(n log n)` distances, `O(log^2 n)` amortized
+per insertion); removal marks and rebuilds like the k-d tree. Removal takes
+the earliest live entry of an id, as `LinearScan` does. A proptest compares
+all three queries with `LinearScan` on random SE(3) inserts and removals.
+Measured over 10k states: SE(3) nearest 63 ms to 14 ms per 256 queries
+(4.5x; six dimensions limit the pruning), 3D Euclidean 3x faster than the
+linear scan but 5x slower than the k-d tree.
 
 ### `Steering`
 
@@ -387,17 +400,23 @@ pairs. Edges are direct motions along `interpolate`.
   current rule and run Dijkstra (ties by `total_cmp`, then node id); the
   direct start-to-center motion is tried when the center is within the
   start's reach (the radius, or the distance of its `k`-th neighbor).
-- Many queries: `query` takes `&mut self` because a lazy roadmap caches
-  edge verdicts. `query_shared(&self)` gives the same answer through a shared
-  reference, keeping lazy verdicts per query, and `query_with(&self,
-  &mut QueryWorkspace, ...)` does so in reusable buffers (Dijkstra's arrays
-  and heap in `graph::Dijkstra`, the verdicts, the neighbor buffer), so an
-  entity that plans repeatedly stops allocating them. `query_batch` (feature
+- Many queries: `query(&mut self)` keeps its buffers in the roadmap;
+  `query_shared(&self)` gives the same answer through a shared reference, and
+  `query_with(&self, &mut QueryWorkspace, ...)` does so in reusable buffers
+  (Dijkstra's arrays and heap in `graph::Dijkstra`, the neighbor buffer), so
+  an entity that plans repeatedly stops allocating them. Lazy verdicts live in
+  the roadmap for all three: each edge's status is an `AtomicU8` written with
+  relaxed ordering, so shared and concurrent queries record and reuse them
+  (two threads checking one edge store the same verdict). `query_batch` (feature
   `parallel`) answers many queries on threads, one workspace per thread, in
   input order, so many entities can plan on one roadmap, as `solve_batch` does
   in `heuristic-search`.
 - Lazy PRM stores edges unchecked and checks the edges of each candidate
-  path at query time. It returns the eager cost for the same samples.
+  path at query time (LazySP: check the shortest path's unchecked edges in
+  order, drop the first invalid one, search again). It returns the eager cost
+  for the same samples and checks only edges on candidate paths; each invalid
+  edge found costs one more Dijkstra search, so with a cheap checker and many
+  queries an eager roadmap answers faster.
 - Roadmap edges are traveled both ways but checked once, from the older to
   the newer node; that assumes a symmetric `check_motion`.
   `check_both_directions` is the switch for directional checkers.
@@ -434,8 +453,16 @@ start and goal directly, since it needs no steering.
 - The radius is `min(gamma (ln q / q)^(1/d), max_radius)` with
   `q = |V| + |X_unconn| - m`, or `ceil(k ln q)` nearest; the bounds are the
   paper's eqs. 1 and 2. The paper takes the smaller of the free and the
-  informed volume in eq. 1; the crate keeps the user's `gamma` (free volume),
-  which is admissible but uses larger neighborhoods.
+  informed volume in eq. 1; BIT* and ABIT* keep the user's `gamma` (free
+  volume), which is admissible but uses larger neighborhoods. AIT* and EIT*
+  follow OMPL instead: `q = |V| + |X_unconn|` with the new batch, and `gamma`
+  scaled by `fraction^(1/d)`, where `Sampler::informed_fraction` gives the
+  informed set's share of the sampled domain (`UniformBox`: the
+  hyperspheroid's volume over the box's, at most one; `None` keeps the whole
+  domain). In `arm_reach` this took AIT* from a path cost of 2.151 to 1.941
+  rad within 10k collision checks, where the old rule's dense batch graphs
+  never improved on the first batch; at equal wall time (300 ms) AIT*
+  matched BIT*'s cost with 12k instead of 486k checks.
 - Batches come from `Sampler::sample_informed`, falling back to rejection,
   and keep only valid states with `f_hat < c_best`.
 - A rewiring lowers the costs of a subtree and makes queue keys stale; both
@@ -508,14 +535,23 @@ cost-to-go incrementally.
   current graph and not admissible for denser future batches.
 - A batch ends at the first edge that cannot beat the incumbent. When the
   batch's graph holds no better path (or none), that is the first edge, so
-  every step starts a batch: up to `batch_size` new states plus one
-  neighbor query per stored state for the graph snapshot (quadratic with
-  `LinearScan`). In free space a run measured 134 batches and 10.5k samples
-  in 500 steps; budget AIT* by batches, not steps, and use `KdTree`.
+  every step starts a batch with up to `batch_size` new states. Neighbor
+  lists are built lazily, on a state's first expansion in the batch (as
+  OMPL); a radius query from `x` finds exactly the states whose query finds
+  `x`, so this equals the symmetrized eager graph, which the `k`-nearest rule
+  and spaces that are not `StateSpace::is_symmetric` still build. Lists carry
+  over to the next batch while the radius does not grow (`informed/rgg.rs`):
+  the new samples are queried at the batch start and appended to their older
+  neighbors' lists, and a carried list is narrowed to the new radius and the
+  live states on first use, with the predicate of a fresh query, so it equals
+  one. Each batch still restarts the reverse search over every state, so CPU
+  time per batch grows with the stored states; budget AIT* by batches or
+  collision checks, not steps, and use `KdTree` or `VpTree`.
 
 `EitStar` follows OMPL's `EITstar` (Strub; Strub and Gammell 2022, IJRR
 41(4), arXiv 2111.01877) without multi-query planning. It shares BIT*'s
-batches, pruning and radius (`batch.rs`) and AIT*'s symmetrized batch graph,
+batches and pruning, AIT*'s OMPL radius rule (`batch.rs`) and AIT*'s
+symmetrized, lazily built batch graph,
 but not AIT*'s LPA*: EIT*'s reverse search is a cost-ordered A* over edges from
 the goal states that is restarted, not repaired.
 

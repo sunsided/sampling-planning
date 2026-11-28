@@ -26,6 +26,10 @@ impl<const N: usize> StateSpace for Euclidean<N> {
     fn is_euclidean(&self) -> bool {
         true
     }
+
+    fn is_symmetric(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]

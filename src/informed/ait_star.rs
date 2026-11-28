@@ -11,14 +11,20 @@ use rand_core::Rng;
 
 use super::batch::{Informed, Neighborhood};
 use super::queues::{EdgeEntry, VertexEntry};
+use super::rgg::{NeighborCache, merge_sorted};
 use super::{BitStarConfig, Error};
 #[cfg(doc)]
 use crate::trees::INFORMED_ATTEMPTS;
 use crate::{GoalRegion, LinearScan, NearestNeighbors, Path, Sampler, StateSpace, ValidityChecker};
 
 /// Settings for [`AitStar`]: the same batch size, radius constant, k-nearest constant and
-/// edge cap as BIT*, with the same meaning, ranges and lower bounds
+/// edge cap as BIT*, with the same ranges and lower bounds
 /// ([`BitStarConfig::gamma_lower_bound`], [`BitStarConfig::k_constant_lower_bound`]).
+///
+/// AIT* computes the batch radius as OMPL does: `q` counts every stored state, the newest
+/// batch included, and `gamma` shrinks with the informed set's share of the sampled domain
+/// ([`Sampler::informed_fraction`]), so the batch graph stays sparse once a solution shrinks
+/// the informed set.
 pub type AitStarConfig = BitStarConfig;
 
 /// What a stored state currently is.
@@ -61,8 +67,14 @@ struct Node<S> {
     /// entry. Edges leave this list when popped.
     incoming: Vec<(usize, [f64; 3])>,
     /// The neighbors in this batch's graph: the RGG neighbors, symmetrized, plus the forward
-    /// tree edges at the start of the batch. Sorted ascending, no duplicates.
+    /// tree edges at the start of the batch. Sorted ascending, no duplicates. Valid while
+    /// `adjacent_batch` is the current batch; see [`AitStar::ensure_adjacent`].
     adjacent: Vec<usize>,
+    /// The batch whose graph `adjacent` holds; `0` before the first batch.
+    adjacent_batch: usize,
+    /// The forward-tree parent and children at the start of the batch, which join the
+    /// lazily built neighbor list.
+    tree_links: Vec<usize>,
     /// The targets of motions from this state that checked as not valid, `E_invalid`; kept
     /// across batches.
     invalid: Vec<usize>,
@@ -164,7 +176,7 @@ impl<S> Node<S> {
 /// let goal = GoalRegion::new([9.0, 9.0], 0.5);
 /// let mut ait = AitStar::new(Euclidean::<2>, sampler, Free, [1.0, 1.0], goal, config)
 ///     .expect("valid");
-/// ait.run(50, &mut rand_pcg::Pcg64Mcg::seed_from_u64(1));
+/// ait.run(200, &mut rand_pcg::Pcg64Mcg::seed_from_u64(1));
 ///
 /// assert!(ait.best_path().expect("free space").cost < 11.0);
 /// ```
@@ -204,6 +216,8 @@ pub struct AitStar<Sp: StateSpace, Sa, C, N = LinearScan<<Sp as StateSpace>::Sta
     neighborhood: Neighborhood,
     /// The number of batches started.
     batches: usize,
+    /// The radius neighbor lists carried across batches.
+    neighbor_cache: NeighborCache,
 }
 
 /// The node id of the start state.
@@ -288,6 +302,7 @@ where
             best_cost: f64::INFINITY,
             neighborhood: Neighborhood::Radius(0.0),
             batches: 0,
+            neighbor_cache: NeighborCache::default(),
         };
         planner.plant_root(start);
 
@@ -328,6 +343,8 @@ where
             reverse_key: None,
             incoming: Vec::new(),
             adjacent: Vec::new(),
+            adjacent_batch: 0,
+            tree_links: Vec::new(),
             invalid: Vec::new(),
         });
 
@@ -341,10 +358,11 @@ where
     /// A batch ends at the first popped edge whose estimate cannot beat the current solution.
     /// When the batch's graph holds no better path than the incumbent (or none at all), that
     /// is the first edge, so every step starts a new batch: it adds up to `batch_size` states
-    /// and runs one neighbor query per stored state, which is quadratic with the
-    /// [`LinearScan`] default of [`AitStar::new`]. Use a [`KdTree`](crate::KdTree) and budget
-    /// by [`AitStar::batch_count`] as well. In free space a near-optimal run can reach 100
-    /// batches in a few hundred steps.
+    /// and restarts the reverse search over all stored states, and the neighbor queries of
+    /// the states it expands are linear with the [`LinearScan`] default of [`AitStar::new`].
+    /// Use a [`KdTree`](crate::KdTree) or [`VpTree`](crate::VpTree) and budget by
+    /// [`AitStar::batch_count`] or collision checks rather than steps. In free space a
+    /// near-optimal run can reach 100 batches in a few hundred steps.
     pub fn step<R: Rng + ?Sized>(&mut self, rng: &mut R) -> bool {
         self.resort_if_stale();
 
@@ -377,9 +395,10 @@ where
             self.prune();
         }
 
-        let sampled = self.sample_batch(rng);
-        self.reindex(sampled);
-        self.build_graph();
+        let first_new = self.nodes.len();
+        self.sample_batch(rng);
+        self.reindex();
+        self.build_graph(first_new);
         self.restart_reverse_search();
         self.expand(START);
     }
@@ -436,11 +455,8 @@ where
         }
     }
 
-    /// Draws up to `batch_size` valid samples that can improve the solution and returns how
-    /// many were added.
-    fn sample_batch<R: Rng + ?Sized>(&mut self, rng: &mut R) -> usize {
-        let mut added = 0;
-
+    /// Draws up to `batch_size` valid samples that can improve the solution.
+    fn sample_batch<R: Rng + ?Sized>(&mut self, rng: &mut R) {
         for _ in 0..self.config.batch_size {
             let informed = Informed {
                 space: &self.space,
@@ -452,16 +468,13 @@ where
 
             if let Some(state) = informed.draw(&mut self.sampler, rng) {
                 self.push_node(state, Kind::Sample);
-                added += 1;
             }
         }
-
-        added
     }
 
     /// Rebuilds the index over all vertices and samples and fixes this batch's neighbor rule
-    /// from `q = |V| + |X_unconn| - m`, as BIT* does.
-    fn reindex(&mut self, sampled: usize) {
+    /// from `q = |V| + |X_unconn|`, the new batch included, and the informed set's measure.
+    fn reindex(&mut self) {
         self.nn = self.prototype.clone();
         let mut live: usize = 0;
 
@@ -472,17 +485,32 @@ where
             }
         }
 
-        let q = live.saturating_sub(sampled).max(2);
-        self.neighborhood = Neighborhood::for_batch(&self.config, q, self.space.dimension());
+        // As OMPL: every informed state counts, the new batch included, and the radius
+        // shrinks with the informed set's measure.
+        let q = live.max(2);
+        let bound = self.best_cost + self.goal.tolerance();
+        let fraction = self
+            .sampler
+            .informed_fraction(&self.space, &self.start, self.goal.center(), bound)
+            .unwrap_or(1.0);
+        self.neighborhood =
+            Neighborhood::for_batch(&self.config, q, self.space.dimension(), fraction);
     }
 
     /// Fixes this batch's graph: every state's RGG neighbors, symmetrized, plus the forward
     /// tree edges, which may be longer than this batch's radius.
-    fn build_graph(&mut self) {
-        let mut near = Vec::new();
-
+    ///
+    /// With a connection radius the neighbor lists are built lazily, on a state's first
+    /// expansion in the batch ([`AitStar::ensure_adjacent`]), as OMPL does: a radius query
+    /// from `x` finds exactly the states whose own query would find `x` (the distance is
+    /// symmetric), so a lazy list equals the symmetrized one, and states the searches never
+    /// touch cost nothing. `k` nearest neighbors are not symmetric, and neither are radius
+    /// neighborhoods in a space that is not [symmetric](StateSpace::is_symmetric), such as
+    /// [`Dubins`](crate::Dubins); those build the whole symmetrized graph here.
+    fn build_graph(&mut self, first_new: usize) {
         for node in &mut self.nodes {
             node.adjacent.clear();
+            node.tree_links.clear();
         }
 
         for id in 0..self.nodes.len() {
@@ -490,26 +518,128 @@ where
                 continue;
             }
 
-            let cap = self.config.max_radius;
-            let keep = |x| x != id && (cap.is_infinite() || self.cost_estimate(id, x) <= cap);
-            self.neighborhood.query(
-                &self.space,
-                &self.nn,
-                &self.nodes[id].state,
-                keep,
-                &mut near,
-            );
-            self.link_all(id, &near);
-
             if let Some(parent) = self.nodes[id].parent {
-                self.link_all(id, &[parent]);
+                self.nodes[id].tree_links.push(parent);
+                self.nodes[parent].tree_links.push(id);
             }
         }
 
-        for node in &mut self.nodes {
+        match self.neighborhood {
+            Neighborhood::Radius(radius) if self.space.is_symmetric() => {
+                self.carry_neighbor_lists(radius, first_new);
+            }
+            _ => self.build_symmetrized_graph(),
+        }
+    }
+
+    /// Builds every live state's neighbor list for the `k`-nearest rule: its own neighbors,
+    /// those that have it as a neighbor, and its tree links.
+    fn build_symmetrized_graph(&mut self) {
+        let mut near = Vec::new();
+
+        for id in 0..self.nodes.len() {
+            if self.nodes[id].kind == Kind::Pruned {
+                continue;
+            }
+
+            self.query_neighbors(id, &mut near);
+            self.link_all(id, &near);
+        }
+
+        for id in 0..self.nodes.len() {
+            let links = core::mem::take(&mut self.nodes[id].tree_links);
+            let node = &mut self.nodes[id];
+            node.adjacent.extend_from_slice(&links);
             node.adjacent.sort_unstable();
             node.adjacent.dedup();
+            node.adjacent_batch = self.batches;
+            node.tree_links = links;
         }
+    }
+
+    /// Starts this batch's radius lists: when the radius did not grow, the new samples are
+    /// queried now and joined to the lists of their older neighbors, so earlier lists stay
+    /// usable ([`NeighborCache`]); otherwise every list is rebuilt on first use.
+    fn carry_neighbor_lists(&mut self, radius: f64, first_new: usize) {
+        let states = self.nodes.len();
+        if !self
+            .neighbor_cache
+            .begin_batch(self.batches, states, radius)
+        {
+            return;
+        }
+
+        let mut near = Vec::new();
+        for sample in first_new..states {
+            if self.nodes[sample].kind == Kind::Pruned {
+                continue;
+            }
+
+            self.query_neighbors(sample, &mut near);
+            near.sort_unstable();
+            self.neighbor_cache.store(sample, &near);
+
+            let older = near.partition_point(|&id| id < first_new);
+            self.neighbor_cache.add_sample(sample, &near[..older]);
+        }
+    }
+
+    /// Builds the neighbor list of `x` for this batch unless it is built already: the live
+    /// states within the connection radius, from the carried list or a fresh query, and the
+    /// tree links, sorted. Pruned states have none.
+    pub(super) fn ensure_adjacent(&mut self, x: usize) {
+        if self.nodes[x].adjacent_batch == self.batches {
+            return;
+        }
+
+        let mut near = core::mem::take(&mut self.nodes[x].adjacent);
+        near.clear();
+
+        if self.nodes[x].kind != Kind::Pruned {
+            self.radius_neighbors(x, &mut near);
+            merge_sorted(&mut near, &self.nodes[x].tree_links);
+        }
+
+        let node = &mut self.nodes[x];
+        node.adjacent = near;
+        node.adjacent_batch = self.batches;
+    }
+
+    /// Replaces `out` with the radius neighbors of `x` in this batch: its carried list,
+    /// narrowed to the live states within the radius and the edge cap exactly as a fresh query
+    /// would select them, or a fresh query that becomes its list.
+    fn radius_neighbors(&mut self, x: usize, out: &mut Vec<usize>) {
+        let Neighborhood::Radius(radius) = self.neighborhood else {
+            unreachable!("only radius neighborhoods are built lazily");
+        };
+
+        let (nodes, space, cap) = (&self.nodes, &self.space, self.config.max_radius);
+        let keep = |y: usize| {
+            let (from, to) = (&nodes[x].state, &nodes[y].state);
+
+            y != x
+                && nodes[y].kind != Kind::Pruned
+                && space.distance(to, from) <= radius
+                && (cap.is_infinite() || space.distance(from, to) <= cap)
+        };
+
+        if let Some(list) = self.neighbor_cache.filter(x, keep) {
+            out.extend_from_slice(list);
+        } else {
+            self.query_neighbors(x, out);
+            out.sort_unstable();
+            self.neighbor_cache.store(x, out);
+        }
+    }
+
+    /// Replaces `out` with the batch neighbors of `id` under the batch rule, without `id`
+    /// itself and without edges longer than `max_radius`.
+    fn query_neighbors(&self, id: usize, out: &mut Vec<usize>) {
+        let cap = self.config.max_radius;
+        let keep = |x| x != id && (cap.is_infinite() || self.cost_estimate(id, x) <= cap);
+
+        self.neighborhood
+            .query(&self.space, &self.nn, &self.nodes[id].state, keep, out);
     }
 
     /// Adds the undirected graph edges between `id` and each of `others`.

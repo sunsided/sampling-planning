@@ -7,6 +7,11 @@
 //! query after that only connects its endpoints and runs Dijkstra. A [`QueryWorkspace`] keeps
 //! the search buffers between queries, so a query allocates almost nothing.
 //!
+//! The example builds the roadmap twice. The eager one checks every edge while it grows; the
+//! lazy one builds in a fraction of the time and checks edges only when a query's candidate
+//! path uses them. Lazy verdicts stay in the roadmap, so later queries reuse them, also through
+//! the shared `&self` queries used here. Both answer every request with the same cost.
+//!
 //! With `--features parallel` the roadmap is also built with a [`ParallelChecker`] and all
 //! requests are answered at once with [`Prm::query_batch`]; both give the same results as the
 //! single-threaded runs.
@@ -98,14 +103,11 @@ fn requests() -> Vec<([f64; 2], GoalRegion<[f64; 2]>)> {
         .collect()
 }
 
-/// Builds an eager PRM* roadmap with `samples` samples over the hall with `checker`.
-///
-/// Eager, not lazy: a lazy roadmap defers edge checks to query time, and a shared query
-/// (`&self`) cannot remember which edges failed, so every query would check them again. For
-/// many queries on one roadmap, checking every edge once up front is far cheaper.
-fn build<C: ValidityChecker<Euclidean<2>>>(checker: C, samples: usize) -> Roadmap<C> {
+/// Builds a PRM* roadmap with `samples` samples over the hall with `checker`, lazy or eager.
+fn build<C: ValidityChecker<Euclidean<2>>>(checker: C, samples: usize, lazy: bool) -> Roadmap<C> {
     let free_volume = HALL[0] * HALL[1] - 3.0 * 14.0 * 2.0 - 16.0;
-    let config = PrmConfig::star(1.5 * PrmConfig::gamma_lower_bound(2, free_volume));
+    let mut config = PrmConfig::star(1.5 * PrmConfig::gamma_lower_bound(2, free_volume));
+    config.lazy = lazy;
 
     let mut prm = Prm::with_nearest_neighbors(
         Euclidean,
@@ -126,16 +128,40 @@ fn millis(start: Instant) -> f64 {
 }
 
 fn main() {
+    let requests = requests();
+    let eager = plan(false, &requests);
+    let lazy = plan(true, &requests);
+
+    for (a, b) in eager.iter().zip(&lazy) {
+        let cost = |path: &Option<Path<[f64; 2]>>| path.as_ref().map(|path| path.cost);
+        assert_eq!(cost(a), cost(b), "lazy and eager roadmaps agree");
+    }
+
+    for ((_, goal), path) in requests.iter().zip(&eager).take(4) {
+        let cost = path.as_ref().map_or(f64::NAN, |path| path.cost);
+        println!(
+            "  dock -> ({:>4.1}, {:>4.1}): {cost:.2}",
+            goal.center()[0],
+            goal.center()[1]
+        );
+    }
+
+    #[cfg(feature = "parallel")]
+    parallel::compare(&requests, &eager);
+}
+
+/// Builds a lazy or eager roadmap, answers every request through one [`QueryWorkspace`] and
+/// prints the timings; returns the paths.
+fn plan(lazy: bool, requests: &[([f64; 2], GoalRegion<[f64; 2]>)]) -> Vec<Option<Path<[f64; 2]>>> {
+    let kind = if lazy { "lazy" } else { "eager" };
     let started = Instant::now();
-    let prm = build(Hall, 3000);
+    let prm = build(Hall, 3000, lazy);
     println!(
-        "roadmap: {} nodes, {} edges, built in {:.1} ms",
+        "{kind} roadmap: {} nodes, built in {:.1} ms",
         prm.node_count(),
-        prm.edge_count(),
         millis(started)
     );
 
-    let requests = requests();
     let mut workspace = QueryWorkspace::default();
     let started = Instant::now();
     let paths: Vec<Option<Path<[f64; 2]>>> = requests
@@ -150,22 +176,12 @@ fn main() {
     let solved = paths.iter().flatten().count();
     let total: f64 = paths.iter().flatten().map(|path| path.cost).sum();
     println!(
-        "{} requests in {elapsed:.2} ms ({:.3} ms each): {solved} solved, {total:.1} total drive",
+        "  {} requests in {elapsed:.2} ms ({:.3} ms each): {solved} solved, {total:.1} total drive",
         requests.len(),
         elapsed / f64::from(u32::try_from(requests.len()).expect("few requests")),
     );
 
-    for ((_, goal), path) in requests.iter().zip(&paths).take(4) {
-        let cost = path.as_ref().map_or(f64::NAN, |path| path.cost);
-        println!(
-            "  dock -> ({:>4.1}, {:>4.1}): {cost:.2}",
-            goal.center()[0],
-            goal.center()[1]
-        );
-    }
-
-    #[cfg(feature = "parallel")]
-    parallel::compare(&requests, &paths);
+    paths
 }
 
 /// The multi-threaded variants (feature `parallel`).
@@ -187,7 +203,7 @@ mod parallel {
         let threads = std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
 
         let started = Instant::now();
-        let prm = build(ParallelChecker::new(Hall, threads, 64), 3000);
+        let prm = build(ParallelChecker::new(Hall, threads, 64), 3000, false);
         println!(
             "parallel roadmap on {threads} threads: built in {:.1} ms",
             millis(started)

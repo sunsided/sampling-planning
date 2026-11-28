@@ -54,6 +54,28 @@ pub trait Sampler<S> {
 
         None
     }
+
+    /// The measure of the informed set `{x : d(start, x) + d(x, goal) <= max_cost}` within
+    /// this sampler's support, as a fraction in `(0, 1]` of the support's measure, or `None`
+    /// when unknown.
+    ///
+    /// [`AitStar`](crate::informed::AitStar) and [`EitStar`](crate::informed::EitStar) scale
+    /// their connection radius with it, as OMPL does with the informed measure: once a
+    /// solution shrinks the informed set, the same number of samples is denser there, so a
+    /// smaller radius keeps the graph's degree near `log q` instead of growing toward a
+    /// complete graph.
+    ///
+    /// The default returns `None`, which keeps the radius of the whole support. [`UniformBox`]
+    /// reports the volume of the [`ProlateHyperspheroid`] (an upper bound on its part inside
+    /// the box) in Euclidean spaces and under a [`LoewnerBound`].
+    fn informed_fraction<Sp>(&self, space: &Sp, start: &S, goal: &S, max_cost: f64) -> Option<f64>
+    where
+        Sp: StateSpace<State = S>,
+    {
+        let _ = (space, start, goal, max_cost);
+
+        None
+    }
 }
 
 /// Draws a uniform `f64` in `[0, 1)` from one `next_u64` call.

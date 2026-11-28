@@ -3,12 +3,14 @@
 mod k_best;
 mod kd_tree;
 mod linear;
+mod vp_tree;
 
 use alloc::vec::Vec;
 
 use crate::StateSpace;
 pub use kd_tree::KdTree;
 pub use linear::LinearScan;
+pub use vp_tree::VpTree;
 
 /// Stores planner nodes by id and answers proximity queries under a [`StateSpace`] metric.
 ///

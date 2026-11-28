@@ -51,29 +51,33 @@ sampling-planning = "0.1"
   prolate-hyperspheroid sampling in Euclidean spaces and, through a Loewner-order lower bound of the
   metric tensor, under configuration-dependent Riemannian metrics), RRT-Connect (bidirectional), RRT# (RRG with LPA*-style replanning). RRT, RRT* and
   RRT-Connect can retire vertices that keep failing to extend from their nearest-neighbor index.
-  With feature `parallel`, `grow_forest` grows several RRT* trees on threads and merges them
-  (each merged node is an RRT* insertion, so keep forests small with `LinearScan`).
+  With feature `parallel`, `grow_forest` grows several RRT* trees on threads and merges them.
   RRT* minimizes any additive cost objective, such as the hybrid risk-density objective over
   Gaussian uncertain obstacles.
 - Roadmaps: PRM (fixed radius or fixed k), PRM* (shrinking radius or `k ln n` nearest), lazy
   PRM, SPARS (sparse roadmap spanner over a dense PRM* graph), SPARS2 (without one);
   multi-query, with Dijkstra queries on a reusable roadmap, also through a shared reference with a
   reusable query workspace and, with feature `parallel`, in batches on several threads; with
-  feature `parallel` a roadmap is also built on several threads. Shared queries on a lazy
-  roadmap re-check its unchecked edges every time, so many queries favor an eager roadmap.
+  feature `parallel` a roadmap is also built on several threads. A lazy roadmap checks edges
+  only on candidate paths and remembers every verdict for later queries, shared and
+  concurrent ones included.
 - Batch-informed planners: BIT* (radius or k-nearest, informed batches, pruning), ABIT*
   (inflated and truncated BIT* searches), AIT* (BIT*-style forward search guided by a lazy LPA*
   reverse search that is repaired on every invalid edge) and EIT* (effort-guided forward search
   over a sparsely checked reverse search, which spends fewer collision checks than AIT*). AIT*
-  and EIT* trade CPU time in their reverse searches for collision checks, which pays off when
-  checks are expensive.
+  and EIT* size their batch graphs by the informed set, as OMPL does, and spend collision
+  checks on edges that improve the path: in the `arm_reach` example they shorten the path
+  within 10 000 checks, where BIT* is still at its first solution. Their reverse searches cost
+  CPU time per batch, which pays off when checks are expensive.
 - Batch planners: FMT* (fast marching tree) and BFMT* (bidirectional, optimal or first-meeting
   termination).
 - Kinodynamic planners: SST and SST* over a `Propagator` (forward simulation) trait, with
   inactive leaves freed; single- or multi-level KPIECE over a user projection.
 - Path post-processing: greedy and randomized shortcutting (`shortcut`, `shortcut_random`).
 - Nearest neighbors: `LinearScan` (any metric), `KdTree` (Euclidean spaces, with removal and
-  balanced rebuilds); nearest, radius and k-nearest queries.
+  balanced rebuilds) and `VpTree` (any symmetric metric, such as SO(2), SE(2), SE(3) and
+  Reeds-Shepp, with removal); nearest, radius and k-nearest queries, all returning exactly the
+  same results.
 - State spaces: `Euclidean<N>`, SO(2) (`So2`), SE(2) (`Se2`), SE(3) (`Se3`, unit quaternions),
   `Riemannian<N, F>` (a configuration-dependent metric tensor), Dubins and Reeds-Shepp cars
   (`Dubins`, `ReedsShepp`, with their shortest paths exposed), with samplers `UniformBox`,
@@ -109,7 +113,7 @@ design. The examples are small, self-contained scenarios:
 | `arm_reach` | A two-link arm reaching under a shelf | BIT*, ABIT*, AIT* and EIT* in joint space on a collision-check budget |
 | `risk_aware_crossing` | A robot crossing a plaza past uncertain people | RRT* with the `RiskDensity` objective versus path length |
 | `unicycle_maze` | A differential-drive robot through an office | SST and single- and multi-level KPIECE over a `Propagator` |
-| `drone_window` | A drone flying through a window and landing at a heading | RRT* over SE(3); with `parallel`, `trees::grow_forest` |
+| `drone_window` | A drone flying through a window and landing at a heading | RRT* over SE(3) with a `VpTree` index; with `parallel`, `trees::grow_forest` |
 
 ```sh
 cargo run --release --example car_parking

@@ -73,6 +73,57 @@ fn one_workspace_answers_many_queries_like_fresh_ones() {
     }
 }
 
+/// The slalom's walls, counting every motion check.
+#[derive(Clone)]
+struct CountingMotions {
+    /// The motion checks so far.
+    motions: std::rc::Rc<std::cell::Cell<usize>>,
+}
+
+impl sampling_planning::ValidityChecker<Euclidean<2>> for CountingMotions {
+    fn check_state(&self, state: &[f64; 2]) -> sampling_planning::Validity {
+        slalom().checker.check_state(state)
+    }
+
+    fn check_motion(
+        &self,
+        space: &Euclidean<2>,
+        from: &[f64; 2],
+        to: &[f64; 2],
+    ) -> sampling_planning::Validity {
+        self.motions.set(self.motions.get() + 1);
+        slalom().checker.check_motion(space, from, to)
+    }
+}
+
+#[test]
+fn shared_lazy_queries_remember_edge_verdicts_for_later_queries() {
+    let checker = CountingMotions {
+        motions: std::rc::Rc::default(),
+    };
+    let prm = roadmap(checker.clone(), true, 6);
+    let (start, goal) = queries().swap_remove(0);
+    let checks = || {
+        let before = checker.motions.get();
+        let path = prm.query_shared(&start, &goal).expect("valid start");
+        (path, checker.motions.get() - before)
+    };
+
+    let (first, first_checks) = checks();
+    let (second, second_checks) = checks();
+    let (third, third_checks) = checks();
+
+    assert!(first.is_some());
+    assert_eq!((&second, &third), (&first, &first));
+    // A repeat only reconnects its endpoints, which are query-local; the roadmap edges along
+    // the candidate paths were checked by the first query.
+    assert!(
+        second_checks < first_checks,
+        "{second_checks} vs {first_checks}"
+    );
+    assert_eq!(second_checks, third_checks);
+}
+
 #[cfg(feature = "parallel")]
 mod parallel {
     use core::num::NonZeroUsize;

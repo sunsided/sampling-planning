@@ -140,6 +140,11 @@ fn assert_graph_is_symmetric_with_tree_edges(planner: &Planner) {
 /// Asserts that the lazily settled states and, after draining the reverse queue, all live
 /// states have the exact cost-to-go.
 fn assert_reverse_search_is_exact(planner: &mut Planner) {
+    // Neighbor lists are built on first use; the reference needs all of them.
+    for id in 0..planner.nodes.len() {
+        planner.ensure_adjacent(id);
+    }
+
     assert_graph_is_symmetric_with_tree_edges(planner);
 
     let reference = dijkstra_to_goal(planner);

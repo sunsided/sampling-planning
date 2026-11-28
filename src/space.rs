@@ -62,4 +62,14 @@ pub trait StateSpace {
     fn is_euclidean(&self) -> bool {
         false
     }
+
+    /// Whether [`StateSpace::distance`] is symmetric, `d(a, b) = d(b, a)` up to rounding.
+    ///
+    /// [`AitStar`](crate::informed::AitStar) and [`EitStar`](crate::informed::EitStar) build
+    /// radius neighborhoods lazily, per state, only when this holds: a radius query from a
+    /// state then finds exactly the states whose own query finds it. Otherwise they build the
+    /// symmetrized batch graph eagerly. The default is `false`, which is always safe.
+    fn is_symmetric(&self) -> bool {
+        false
+    }
 }

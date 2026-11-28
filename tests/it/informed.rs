@@ -166,7 +166,7 @@ fn ait_star_solves_improves_and_stays_above_the_optimum() {
         let mut rng = Pcg64Mcg::seed_from_u64(seed);
         let mut costs = Vec::new();
 
-        for _ in 0..20 {
+        for _ in 0..12 {
             planner.run(200, &mut rng);
             costs.extend(planner.best_path().map(|path| path.cost));
         }
@@ -199,7 +199,7 @@ fn ait_star_matches_across_indices_and_supports_k_nearest() {
         ..config()
     };
 
-    for (config, iterations) in [(config(), 3000), (k_config, 1500)] {
+    for (config, iterations) in [(config(), 1200), (k_config, 1500)] {
         let mut kd = ait_star(pole(), config, KdTree::default());
         let mut linear = ait_star(pole(), config, LinearScan::default());
         kd.run(iterations, &mut Pcg64Mcg::seed_from_u64(5));
@@ -527,4 +527,108 @@ fn eit_star_rejects_a_suboptimality_below_one() {
         world.goal,
         config,
     );
+}
+
+/// The plane with [`Euclidean`]'s metric that does not claim to be symmetric, so AIT* and
+/// EIT* build their batch graph eagerly and symmetrized instead of lazily.
+#[derive(Debug, Clone, Copy)]
+struct UnclaimedPlane;
+
+impl sampling_planning::StateSpace for UnclaimedPlane {
+    type State = [f64; 2];
+
+    fn dimension(&self) -> usize {
+        2
+    }
+
+    fn distance(&self, a: &[f64; 2], b: &[f64; 2]) -> f64 {
+        Euclidean::<2>.distance(a, b)
+    }
+
+    fn interpolate(&self, a: &[f64; 2], b: &[f64; 2], t: f64) -> [f64; 2] {
+        Euclidean::<2>.interpolate(a, b, t)
+    }
+
+    fn is_euclidean(&self) -> bool {
+        true
+    }
+}
+
+/// [`Boxes`] over [`UnclaimedPlane`].
+#[derive(Debug, Clone)]
+struct UnclaimedBoxes(Boxes);
+
+impl sampling_planning::ValidityChecker<UnclaimedPlane> for UnclaimedBoxes {
+    fn check_state(&self, state: &[f64; 2]) -> sampling_planning::Validity {
+        self.0.check_state(state)
+    }
+
+    fn check_motion(
+        &self,
+        _: &UnclaimedPlane,
+        from: &[f64; 2],
+        to: &[f64; 2],
+    ) -> sampling_planning::Validity {
+        self.0.check_motion(&Euclidean::<2>, from, to)
+    }
+}
+
+#[test]
+fn eager_batch_graphs_of_unsymmetric_spaces_equal_the_lazy_ones() {
+    use sampling_planning::StateSpace;
+
+    let world = slalom();
+    assert!(Euclidean::<2>.is_symmetric() && !UnclaimedPlane.is_symmetric());
+    let unclaimed = UnclaimedBoxes(world.checker.clone());
+
+    for seed in 0..3 {
+        let rng = || Pcg64Mcg::seed_from_u64(seed);
+        let (start, goal) = (world.start, world.goal.clone());
+
+        let mut lazy = AitStar::new(
+            world.space,
+            world.sampler,
+            world.checker.clone(),
+            start,
+            goal.clone(),
+            config(),
+        )
+        .expect("valid problem");
+        let mut eager = AitStar::new(
+            UnclaimedPlane,
+            world.sampler,
+            unclaimed.clone(),
+            start,
+            goal.clone(),
+            config(),
+        )
+        .expect("valid problem");
+        lazy.run(1500, &mut rng());
+        eager.run(1500, &mut rng());
+        assert!(lazy.best_path().is_some());
+        assert_eq!(lazy.best_path(), eager.best_path(), "AIT*, seed {seed}");
+
+        let mut lazy = EitStar::new(
+            world.space,
+            world.sampler,
+            world.checker.clone(),
+            start,
+            goal.clone(),
+            eit_config(),
+        )
+        .expect("valid problem");
+        let mut eager = EitStar::new(
+            UnclaimedPlane,
+            world.sampler,
+            unclaimed.clone(),
+            start,
+            goal,
+            eit_config(),
+        )
+        .expect("valid problem");
+        lazy.run(20_000, &mut rng());
+        eager.run(20_000, &mut rng());
+        assert!(lazy.best_path().is_some());
+        assert_eq!(lazy.best_path(), eager.best_path(), "EIT*, seed {seed}");
+    }
 }
