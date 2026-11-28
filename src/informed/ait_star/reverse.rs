@@ -114,7 +114,7 @@ where
         self.graph.nodes[x].ext.reverse_key = None;
 
         self.graph.ensure_adjacent(x);
-        let neighbors = core::mem::take(&mut self.graph.nodes[x].adjacent);
+        let neighbors = core::mem::take(&mut self.graph.nodes[x].links.adjacent);
         let node = &mut self.graph.nodes[x];
         let overconsistent = node.ext.h_con < node.ext.h_exp;
 
@@ -126,7 +126,7 @@ where
             self.raise_neighbors(x, old, &neighbors);
         }
 
-        self.graph.nodes[x].adjacent = neighbors;
+        self.graph.nodes[x].links.adjacent = neighbors;
 
         if !overconsistent {
             self.update_state(x);
@@ -175,6 +175,7 @@ where
 
         self.graph.ensure_adjacent(x);
         let h_con = self.graph.nodes[x]
+            .links
             .adjacent
             .iter()
             .filter(|&&y| !self.is_invalid(x, y))

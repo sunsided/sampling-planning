@@ -43,8 +43,8 @@ where
     fn expand_reverse(&mut self, source: usize, skip: Option<usize>) {
         self.graph.ensure_adjacent(source);
 
-        for index in 0..self.graph.nodes[source].adjacent.len() {
-            let target = self.graph.nodes[source].adjacent[index];
+        for index in 0..self.graph.nodes[source].links.adjacent.len() {
+            let target = self.graph.nodes[source].links.adjacent[index];
 
             if Some(target) == skip || self.graph.nodes[target].kind == Kind::Pruned {
                 continue;

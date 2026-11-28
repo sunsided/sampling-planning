@@ -17,8 +17,8 @@ where
     pub(super) fn expand_forward(&mut self, vertex: usize, skip: Option<usize>) {
         self.graph.ensure_adjacent(vertex);
 
-        for index in 0..self.graph.nodes[vertex].adjacent.len() {
-            let target = self.graph.nodes[vertex].adjacent[index];
+        for index in 0..self.graph.nodes[vertex].links.adjacent.len() {
+            let target = self.graph.nodes[vertex].links.adjacent[index];
 
             if Some(target) != skip
                 && self.graph.nodes[target].kind != Kind::Pruned
@@ -106,8 +106,8 @@ where
     fn refresh_forward_from(&mut self, from: usize) {
         self.graph.ensure_adjacent(from);
 
-        for index in 0..self.graph.nodes[from].adjacent.len() {
-            let to = self.graph.nodes[from].adjacent[index];
+        for index in 0..self.graph.nodes[from].links.adjacent.len() {
+            let to = self.graph.nodes[from].links.adjacent[index];
             self.refresh_forward(from, to);
         }
     }

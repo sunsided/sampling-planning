@@ -24,7 +24,7 @@ where
     /// invalid (Algorithms 3 and 4).
     pub(super) fn expand(&mut self, v: usize) {
         self.graph.ensure_adjacent(v);
-        let neighbors = core::mem::take(&mut self.graph.nodes[v].adjacent);
+        let neighbors = core::mem::take(&mut self.graph.nodes[v].links.adjacent);
 
         for &x in &neighbors {
             if !self.is_invalid(v, x) {
@@ -32,7 +32,7 @@ where
             }
         }
 
-        self.graph.nodes[v].adjacent = neighbors;
+        self.graph.nodes[v].links.adjacent = neighbors;
     }
 
     /// Queues the edge from `v` to `x` with its current key, unless it is queued with that

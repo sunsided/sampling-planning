@@ -83,7 +83,7 @@ fn dijkstra_to_goal(planner: &Planner) -> Vec<f64> {
             continue;
         }
 
-        for &x in &nodes[y].adjacent {
+        for &x in &nodes[y].links.adjacent {
             let through = c + planner
                 .graph
                 .space
@@ -124,16 +124,16 @@ fn assert_matches(planner: &Planner, reference: &[f64], settled: impl Fn(usize) 
 /// Asserts that the batch graph is symmetric and holds every forward-tree edge.
 fn assert_graph_is_symmetric_with_tree_edges(planner: &Planner) {
     for (id, node) in planner.graph.nodes.iter().enumerate() {
-        for &other in &node.adjacent {
+        for &other in &node.links.adjacent {
             assert!(
-                planner.graph.nodes[other].adjacent.contains(&id),
+                planner.graph.nodes[other].links.adjacent.contains(&id),
                 "{id} - {other}"
             );
         }
 
         if let Some(parent) = node.parent {
             assert!(
-                node.adjacent.contains(&parent),
+                node.links.adjacent.contains(&parent),
                 "tree edge {parent} -> {id}"
             );
         }

@@ -14,7 +14,7 @@ use core::fmt;
 
 use rand_core::Rng;
 
-use super::batch_graph::{BatchGraph, Kind, START};
+use super::batch_graph::{BatchGraph, Extension, Kind, START};
 use super::queues::EdgeEntry;
 use super::{BitStarConfig, Error};
 use crate::{GoalRegion, LinearScan, NearestNeighbors, Path, Sampler, StateSpace, ValidityChecker};
@@ -96,6 +96,8 @@ struct EitExt {
     /// The sources of the queued forward edges into this state.
     incoming: Vec<usize>,
 }
+
+impl Extension for EitExt {}
 
 impl Default for EitExt {
     fn default() -> Self {

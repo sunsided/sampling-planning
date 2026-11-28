@@ -7,9 +7,12 @@ use alloc::{
 
 use rand_core::Rng;
 
+use core::fmt;
+
 use super::Error;
 use super::abit_star::{AbitStarConfig, Search};
-use super::batch::{Informed, Neighborhood};
+use super::batch::Neighborhood;
+use super::batch_graph::{BatchGraph, Extension, Kind, START};
 use super::queues::{EdgeEntry, VertexEntry};
 use crate::radius::k_constant_lower_bound;
 #[cfg(doc)]
@@ -86,34 +89,9 @@ impl BitStarConfig {
     }
 }
 
-/// What a stored state currently is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Kind {
-    /// A tree vertex.
-    Vertex,
-    /// A sample not connected to the tree (`X_unconn`).
-    Sample,
-    /// Pruned for good: it cannot improve the solution.
-    Pruned,
-}
-
-/// One stored state: a vertex or a sample.
+/// BIT*'s batch bookkeeping of one stored state.
 #[derive(Debug, Clone)]
-struct Node<S> {
-    /// The state.
-    state: S,
-    /// What the state currently is.
-    kind: Kind,
-    /// The cost-to-come through the tree, `g_T`; infinite for samples.
-    g: f64,
-    /// The admissible cost-to-come `g_hat = d(start, x)`.
-    g_hat: f64,
-    /// The admissible cost-to-go `h_hat = max(0, d(x, goal center) - tolerance)`.
-    h_hat: f64,
-    /// The tree parent; `None` for the root and samples.
-    parent: Option<usize>,
-    /// The tree children.
-    children: Vec<usize>,
+struct BitExt {
     /// A vertex that has not been expanded yet (`V_unexpnd`).
     unexpanded: bool,
     /// A sample added in the current batch, sampled or recycled (`X_new`).
@@ -122,15 +100,21 @@ struct Node<S> {
     queued: bool,
 }
 
-impl<S> Node<S> {
-    /// The admissible solution cost through this state, `f_hat = g_hat + h_hat`.
-    fn f_hat(&self) -> f64 {
-        self.g_hat + self.h_hat
+impl Default for BitExt {
+    fn default() -> Self {
+        Self {
+            unexpanded: false,
+            fresh: true,
+            queued: false,
+        }
     }
+}
 
-    /// Whether the state lies in the goal region, where the cost-to-go estimate is zero.
-    fn in_goal(&self) -> bool {
-        self.h_hat <= 0.0
+impl Extension for BitExt {
+    /// A recycled vertex is a fresh sample of the new batch and no longer waits for expansion.
+    fn disconnected(&mut self, recycled: bool) {
+        self.fresh = recycled;
+        self.unexpanded = false;
     }
 }
 
@@ -193,40 +177,16 @@ impl<S> Node<S> {
 ///
 /// assert!(bit.best_path().expect("free space").cost < 11.0);
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct BitStar<Sp: StateSpace, Sa, C, N = LinearScan<<Sp as StateSpace>::State>> {
-    /// The configuration space.
-    space: Sp,
-    /// Draws the batches.
-    sampler: Sa,
-    /// Decides which states and motions are allowed.
-    checker: C,
-    /// The start state; node `0`.
-    start: Sp::State,
-    /// Where the path has to end.
-    goal: GoalRegion<Sp::State>,
-    /// The validated settings.
-    config: BitStarConfig,
-    /// All stored states, by node id; node `0` is the start.
-    nodes: Vec<Node<Sp::State>>,
-    /// An empty index, cloned for every batch.
-    prototype: N,
-    /// Index over the vertices and samples of the current batch.
-    nn: N,
+    /// The problem and the stored states with the forward tree; BIT* uses no batch graph.
+    graph: BatchGraph<Sp, Sa, C, N, BitExt, ()>,
     /// The vertex queue `Q_V`.
     vertex_queue: BinaryHeap<VertexEntry>,
     /// The edge queue `Q_E`.
     edge_queue: BinaryHeap<EdgeEntry>,
     /// Whether a rewiring changed costs since the queues were keyed.
     stale_keys: bool,
-    /// The vertices inside the goal region (`V_sol'n`).
-    solutions: Vec<usize>,
-    /// The cost of the best solution, `c_i`; infinite until one is found.
-    best_cost: f64,
-    /// The connection radius of the current batch, or the neighbor count for k-nearest.
-    neighborhood: Neighborhood,
-    /// The number of batches started.
-    batches: usize,
     /// Reused buffer for neighbor queries.
     near: Vec<usize>,
     /// ABIT*'s inflation and truncation state; `None` for plain BIT*.
@@ -234,6 +194,27 @@ pub struct BitStar<Sp: StateSpace, Sa, C, N = LinearScan<<Sp as StateSpace>::Sta
     /// ABIT* only: edges `(from, to)` found invalid, so that the final search on a batch does
     /// not check them again. Ids are stable because pruned states stay stored.
     invalid: BTreeSet<(usize, usize)>,
+}
+
+impl<Sp, Sa, C, N> fmt::Debug for BitStar<Sp, Sa, C, N>
+where
+    Sp: StateSpace + fmt::Debug,
+    Sp::State: fmt::Debug,
+    Sa: fmt::Debug,
+    C: fmt::Debug,
+    N: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BitStar")
+            .field("graph", &self.graph)
+            .field("vertex_queue", &self.vertex_queue)
+            .field("edge_queue", &self.edge_queue)
+            .field("stale_keys", &self.stale_keys)
+            .field("near", &self.near)
+            .field("search", &self.search)
+            .field("invalid", &self.invalid)
+            .finish()
+    }
 }
 
 impl<Sp, Sa, C> BitStar<Sp, Sa, C>
@@ -291,37 +272,19 @@ where
         config: BitStarConfig,
         nn: N,
     ) -> Result<Self, Error> {
-        config.validate()?;
+        let mut graph: BatchGraph<_, _, _, _, BitExt, ()> =
+            BatchGraph::new(space, sampler, checker, start, goal, config, nn)?;
+        graph.nodes[START].ext.unexpanded = true;
 
-        let validity = checker.check_state(&start);
-        if !validity.is_valid() {
-            return Err(Error::InvalidStart(validity));
-        }
-
-        let mut planner = Self {
-            space,
-            sampler,
-            checker,
-            start: start.clone(),
-            goal,
-            config,
-            nodes: Vec::new(),
-            nn: nn.clone(),
-            prototype: nn,
+        Ok(Self {
+            graph,
             vertex_queue: BinaryHeap::new(),
             edge_queue: BinaryHeap::new(),
             stale_keys: false,
-            solutions: Vec::new(),
-            best_cost: f64::INFINITY,
-            neighborhood: Neighborhood::Radius(0.0),
-            batches: 0,
             near: Vec::new(),
             search: None,
             invalid: BTreeSet::new(),
-        };
-        planner.plant_root(start);
-
-        Ok(planner)
+        })
     }
 
     /// Turns this planner into ABIT* with the given factors; see [`AbitStarConfig`].
@@ -329,44 +292,6 @@ where
         self.search = Some(Search::new(config));
 
         self
-    }
-
-    /// Stores the start as vertex `0` and the goal center as the first sample, if it is valid.
-    fn plant_root(&mut self, start: Sp::State) {
-        let root = self.push_node(start, Kind::Vertex);
-        self.nodes[root].g = 0.0;
-        self.nodes[root].unexpanded = true;
-
-        if self.nodes[root].in_goal() {
-            self.solutions.push(root);
-            self.best_cost = 0.0;
-        }
-
-        let center = self.goal.center().clone();
-        if self.checker.check_state(&center).is_valid() {
-            self.push_node(center, Kind::Sample);
-        }
-    }
-
-    /// Stores a new state of the given kind with its heuristics and returns its id.
-    fn push_node(&mut self, state: Sp::State, kind: Kind) -> usize {
-        let id = self.nodes.len();
-        let center_distance = self.space.distance(&state, self.goal.center());
-
-        self.nodes.push(Node {
-            g_hat: self.space.distance(&self.start, &state),
-            h_hat: (center_distance - self.goal.tolerance()).max(0.0),
-            g: f64::INFINITY,
-            state,
-            kind,
-            parent: None,
-            children: Vec::new(),
-            unexpanded: false,
-            fresh: true,
-            queued: false,
-        });
-
-        id
     }
 
     /// Runs one iteration: starts a new batch if both queues are empty, expands vertices while
@@ -402,7 +327,7 @@ where
     /// Starts the next search: a new batch, or for ABIT* with a solution the final, less
     /// inflated search on the current batch after its inflated one.
     fn start_search<R: Rng + ?Sized>(&mut self, rng: &mut R) {
-        let has_solution = self.best_cost.is_finite();
+        let has_solution = self.graph.best_cost.is_finite();
         let Some(mut search) = self.search else {
             self.start_batch(rng);
             return;
@@ -426,7 +351,8 @@ where
 
     /// The number of vertices and samples that are not pruned, `|V| + |X_unconn|`.
     fn live_states(&self) -> usize {
-        self.nodes
+        self.graph
+            .nodes
             .iter()
             .filter(|node| node.kind != Kind::Pruned)
             .count()
@@ -434,138 +360,40 @@ where
 
     /// Prunes, samples a batch, re-indexes and queues every vertex (Algorithm 1, lines 7-12).
     fn start_batch<R: Rng + ?Sized>(&mut self, rng: &mut R) {
-        self.batches += 1;
+        self.graph.batches += 1;
 
-        for node in &mut self.nodes {
-            node.fresh = false;
+        for node in &mut self.graph.nodes {
+            node.ext.fresh = false;
         }
 
-        if self.best_cost.is_finite() {
-            self.prune();
+        if self.graph.best_cost.is_finite() {
+            self.graph.prune();
         }
 
-        let sampled = self.sample_batch(rng);
+        let sampled = self.graph.sample_batch(rng);
         self.reindex(sampled);
 
-        for id in 0..self.nodes.len() {
-            if self.nodes[id].kind == Kind::Vertex {
+        for id in 0..self.graph.nodes.len() {
+            if self.graph.nodes[id].kind == Kind::Vertex {
                 self.queue_vertex(id);
             }
         }
     }
 
-    /// Removes the samples and vertices that cannot improve the solution; vertices that still
-    /// could as samples are recycled into the new batch (Algorithm 3).
-    fn prune(&mut self) {
-        let c = self.best_cost;
-
-        for node in &mut self.nodes {
-            if node.kind == Kind::Sample && node.f_hat() >= c {
-                node.kind = Kind::Pruned;
-            }
-        }
-
-        let mut vertices: Vec<usize> = (0..self.nodes.len())
-            .filter(|&id| self.nodes[id].kind == Kind::Vertex)
-            .collect();
-        vertices.sort_by(|&a, &b| self.nodes[a].g.total_cmp(&self.nodes[b].g).then(a.cmp(&b)));
-
-        // Rounding can lift the solution's own branch above `c` (a goal vertex on the
-        // region's rim, in line with the start, gets `h_hat(start) > c`); never cut it.
-        let mut on_solution = alloc::vec![false; self.nodes.len()];
-        let mut current = self.best_solution();
-        while let Some(id) = current {
-            on_solution[id] = true;
-            current = self.nodes[id].parent;
-        }
-
-        for v in vertices {
-            let node = &self.nodes[v];
-            if node.kind == Kind::Vertex
-                && !on_solution[v]
-                && (node.f_hat() > c || node.g + node.h_hat > c)
-            {
-                self.disconnect(v);
-            }
-        }
-
-        // Children of a pruned vertex cost more than the solution too, so the sweep above
-        // removed them as well; this keeps the tree whole should rounding disagree.
-        for v in 1..self.nodes.len() {
-            if self.nodes[v].kind == Kind::Vertex && self.nodes[v].parent.is_none() {
-                self.disconnect(v);
-            }
-        }
-
-        self.solutions
-            .retain(|&id| self.nodes[id].kind == Kind::Vertex);
-    }
-
-    /// Removes vertex `v` from the tree; it becomes a fresh sample if it could still improve
-    /// the solution and is pruned otherwise. Its children are pruned by the caller's loop,
-    /// since their costs exceed the solution cost too.
-    fn disconnect(&mut self, v: usize) {
-        if let Some(parent) = self.nodes[v].parent.take() {
-            self.nodes[parent].children.retain(|&child| child != v);
-        }
-
-        let recycle = self.nodes[v].f_hat() < self.best_cost;
-        let node = &mut self.nodes[v];
-        node.kind = if recycle { Kind::Sample } else { Kind::Pruned };
-        node.g = f64::INFINITY;
-        node.fresh = recycle;
-        node.unexpanded = false;
-
-        for child in core::mem::take(&mut node.children) {
-            self.nodes[child].parent = None;
-        }
-    }
-
-    /// Draws up to `batch_size` valid samples that can improve the solution and returns how
-    /// many were added.
-    fn sample_batch<R: Rng + ?Sized>(&mut self, rng: &mut R) -> usize {
-        let mut added = 0;
-
-        for _ in 0..self.config.batch_size {
-            let informed = Informed {
-                space: &self.space,
-                checker: &self.checker,
-                start: &self.start,
-                goal: &self.goal,
-                best_cost: self.best_cost,
-            };
-
-            if let Some(state) = informed.draw(&mut self.sampler, rng) {
-                self.push_node(state, Kind::Sample);
-                added += 1;
-            }
-        }
-
-        added
-    }
-
     /// Rebuilds the index over all vertices and samples and fixes this batch's neighbor rule
     /// from `q = |V| + |X_unconn| - m` (eqs. 1 and 2).
     fn reindex(&mut self, sampled: usize) {
-        self.nn = self.prototype.clone();
-        let mut live: usize = 0;
-
-        for (id, node) in self.nodes.iter().enumerate() {
-            if node.kind != Kind::Pruned {
-                self.nn.insert(id, node.state.clone());
-                live += 1;
-            }
-        }
-
+        let live = self.graph.rebuild_index();
         let q = live.saturating_sub(sampled).max(2);
-        self.neighborhood = Neighborhood::for_batch(&self.config, q, self.space.dimension(), 1.0);
+        self.graph.neighborhood =
+            Neighborhood::for_batch(&self.graph.config, q, self.graph.space.dimension(), 1.0);
     }
 
     /// Queues vertex `v` for expansion.
     fn queue_vertex(&mut self, v: usize) {
         let inflation = self.inflation();
-        let node = &mut self.nodes[v];
-        node.queued = true;
+        let node = &mut self.graph.nodes[v];
+        node.ext.queued = true;
         self.vertex_queue.push(VertexEntry {
             key: node.g + inflation * node.h_hat,
             cost: node.g,
@@ -587,8 +415,8 @@ where
             .map(|entry| entry.vertex)
             .collect();
         for v in vertices {
-            if self.nodes[v].queued && self.nodes[v].kind == Kind::Vertex {
-                self.nodes[v].queued = false;
+            if self.graph.nodes[v].ext.queued && self.graph.nodes[v].kind == Kind::Vertex {
+                self.graph.nodes[v].ext.queued = false;
                 self.queue_vertex(v);
             }
         }
@@ -602,9 +430,9 @@ where
     /// The best vertex-queue value `g_T(v) + h_hat(v)`, or infinity, dropping stale entries.
     fn best_vertex_value(&mut self) -> f64 {
         while let Some(entry) = self.vertex_queue.peek() {
-            let node = &self.nodes[entry.vertex];
+            let node = &self.graph.nodes[entry.vertex];
 
-            if node.queued && node.kind == Kind::Vertex {
+            if node.ext.queued && node.kind == Kind::Vertex {
                 return entry.key;
             }
 
@@ -629,16 +457,16 @@ where
         };
 
         let v = entry.vertex;
-        if !self.nodes[v].queued || self.nodes[v].kind != Kind::Vertex {
+        if !self.graph.nodes[v].ext.queued || self.graph.nodes[v].kind != Kind::Vertex {
             return true;
         }
 
-        self.nodes[v].queued = false;
+        self.graph.nodes[v].ext.queued = false;
 
         let mut near = core::mem::take(&mut self.near);
         self.neighbors(v, &mut near);
 
-        let unexpanded = self.nodes[v].unexpanded;
+        let unexpanded = self.graph.nodes[v].ext.unexpanded;
         // ABIT* cascades rewirings: every expansion of a vertex may rewire, not just its first.
         let rewires = unexpanded || self.search.is_some();
         for &x in &near {
@@ -649,7 +477,7 @@ where
             }
         }
 
-        self.nodes[v].unexpanded = false;
+        self.graph.nodes[v].ext.unexpanded = false;
         self.near = near;
 
         true
@@ -659,51 +487,62 @@ where
     /// a fresh one, or any if `v` was never expanded, whose estimated solution cost beats the
     /// current one.
     fn is_sample_edge_candidate(&self, v: usize, x: usize, unexpanded: bool) -> bool {
-        let target = &self.nodes[x];
+        let target = &self.graph.nodes[x];
 
         target.kind == Kind::Sample
-            && (unexpanded || target.fresh)
-            && self.nodes[v].g_hat + self.edge_estimate(v, x) + target.h_hat < self.best_cost
+            && (unexpanded || target.ext.fresh)
+            && self.graph.nodes[v].g_hat + self.edge_estimate(v, x) + target.h_hat
+                < self.graph.best_cost
     }
 
     /// Whether the edge from vertex `v` to vertex `w` is a rewiring candidate: `v` may rewire
     /// (it was never expanded, or ABIT* cascades rewirings), the edge is not a tree edge, and
     /// it could improve both `w` and the solution.
     fn is_rewire_candidate(&self, v: usize, w: usize, rewires: bool) -> bool {
-        let target = &self.nodes[w];
-        let through = self.nodes[v].g_hat + self.edge_estimate(v, w);
+        let target = &self.graph.nodes[w];
+        let through = self.graph.nodes[v].g_hat + self.edge_estimate(v, w);
 
         rewires
             && target.kind == Kind::Vertex
             && w != v
             && target.parent != Some(v)
-            && through + target.h_hat < self.best_cost
+            && through + target.h_hat < self.graph.best_cost
             && through < target.g
     }
 
     /// Replaces `out` with the vertices and samples near node `v` under this batch's rule,
     /// excluding `v`.
     fn neighbors(&self, v: usize, out: &mut Vec<usize>) {
-        let cap = self.config.max_radius;
+        let cap = self.graph.config.max_radius;
         let keep = |x| x != v && (cap.is_infinite() || self.edge_estimate(v, x) <= cap);
 
-        self.neighborhood
-            .query(&self.space, &self.nn, &self.nodes[v].state, keep, out);
+        self.graph.neighborhood.query(
+            &self.graph.space,
+            &self.graph.nn,
+            &self.graph.nodes[v].state,
+            keep,
+            out,
+        );
     }
 
     /// The admissible edge cost estimate `c_hat(v, x) = d(v, x)`.
     fn edge_estimate(&self, v: usize, x: usize) -> f64 {
-        self.space
-            .distance(&self.nodes[v].state, &self.nodes[x].state)
+        self.graph
+            .space
+            .distance(&self.graph.nodes[v].state, &self.graph.nodes[x].state)
     }
 
     /// Queues the edge from vertex `v` to `x` with its current keys.
     fn queue_edge(&mut self, v: usize, x: usize) {
-        let g = self.nodes[v].g;
+        let g = self.graph.nodes[v].g;
         let through = g + self.edge_estimate(v, x);
 
         self.edge_queue.push(EdgeEntry {
-            key: [through + self.inflation() * self.nodes[x].h_hat, through, g],
+            key: [
+                through + self.inflation() * self.graph.nodes[x].h_hat,
+                through,
+                g,
+            ],
             from: v,
             to: x,
         });
@@ -715,19 +554,19 @@ where
     fn process_edge(&mut self, edge: EdgeEntry) -> bool {
         let (v, x) = (edge.from, edge.to);
 
-        if self.nodes[v].kind != Kind::Vertex || self.nodes[x].kind == Kind::Pruned {
+        if self.graph.nodes[v].kind != Kind::Vertex || self.graph.nodes[x].kind == Kind::Pruned {
             return false;
         }
 
-        let g_v = self.nodes[v].g;
+        let g_v = self.graph.nodes[v].g;
         let estimate = g_v + self.edge_estimate(v, x);
 
-        if self.truncation() * (estimate + self.nodes[x].h_hat) >= self.best_cost {
+        if self.truncation() * (estimate + self.graph.nodes[x].h_hat) >= self.graph.best_cost {
             self.end_search(edge);
             return false;
         }
 
-        if estimate >= self.nodes[x].g || !self.is_edge_valid(v, x) {
+        if estimate >= self.graph.nodes[x].g || !self.is_edge_valid(v, x) {
             return false;
         }
 
@@ -764,8 +603,13 @@ where
         }
 
         let valid = self
+            .graph
             .checker
-            .check_motion(&self.space, &self.nodes[from].state, &self.nodes[to].state)
+            .check_motion(
+                &self.graph.space,
+                &self.graph.nodes[from].state,
+                &self.graph.nodes[to].state,
+            )
             .is_valid();
 
         if !valid && self.search.is_some() {
@@ -788,102 +632,69 @@ where
     /// Makes `v` the parent of `x` with cost `g`: adds the sample `x` to the tree, or rewires
     /// the vertex `x` and lowers the costs of its subtree. Updates the solution.
     fn connect(&mut self, v: usize, x: usize, g: f64) {
-        if let Some(old) = self.nodes[x].parent {
-            self.nodes[old].children.retain(|&child| child != x);
+        if let Some(old) = self.graph.nodes[x].parent {
+            self.graph.nodes[old].children.retain(|&child| child != x);
             self.stale_keys = true;
         }
 
-        let was_sample = self.nodes[x].kind == Kind::Sample;
-        let node = &mut self.nodes[x];
+        let was_sample = self.graph.nodes[x].kind == Kind::Sample;
+        let node = &mut self.graph.nodes[x];
         node.parent = Some(v);
         node.g = g;
-        self.nodes[v].children.push(x);
+        self.graph.nodes[v].children.push(x);
 
         if was_sample {
-            let node = &mut self.nodes[x];
+            let node = &mut self.graph.nodes[x];
             node.kind = Kind::Vertex;
-            node.unexpanded = true;
+            node.ext.unexpanded = true;
             self.queue_vertex(x);
 
-            if self.nodes[x].in_goal() {
-                self.solutions.push(x);
+            if self.graph.nodes[x].in_goal() {
+                self.graph.solutions.push(x);
             }
         } else {
             self.propagate_costs(x);
         }
 
-        self.update_best_cost();
+        self.graph.update_best_cost();
     }
 
     /// Recomputes the costs of all descendants of `x` from their parents' costs.
     fn propagate_costs(&mut self, x: usize) {
-        let mut stack = self.nodes[x].children.clone();
+        let mut stack = self.graph.nodes[x].children.clone();
 
         while let Some(child) = stack.pop() {
-            let parent = self.nodes[child].parent.expect("a child has a parent");
-            self.nodes[child].g = self.nodes[parent].g + self.edge_estimate(parent, child);
-            stack.extend_from_slice(&self.nodes[child].children);
+            let parent = self.graph.nodes[child]
+                .parent
+                .expect("a child has a parent");
+            self.graph.nodes[child].g =
+                self.graph.nodes[parent].g + self.edge_estimate(parent, child);
+            stack.extend_from_slice(&self.graph.nodes[child].children);
         }
-    }
-
-    /// Sets `c_best` to the cost of the cheapest solution vertex.
-    fn update_best_cost(&mut self) {
-        self.best_cost = self
-            .solutions
-            .iter()
-            .map(|&id| self.nodes[id].g)
-            .fold(f64::INFINITY, f64::min);
-    }
-
-    /// The cheapest goal vertex, the lowest id among equally cheap ones, or `None`.
-    fn best_solution(&self) -> Option<usize> {
-        self.solutions
-            .iter()
-            .copied()
-            .min_by(|&a, &b| self.nodes[a].g.total_cmp(&self.nodes[b].g).then(a.cmp(&b)))
     }
 
     /// The cheapest path found so far, or `None` if no vertex reached the goal yet. Its cost
     /// never increases as iterations run.
     #[must_use]
     pub fn best_path(&self) -> Option<Path<Sp::State>> {
-        let best = self.best_solution()?;
-        let mut states = Vec::new();
-        let mut current = Some(best);
-
-        while let Some(id) = current {
-            states.push(self.nodes[id].state.clone());
-            current = self.nodes[id].parent;
-        }
-
-        states.reverse();
-
-        Some(Path {
-            states,
-            cost: self.nodes[best].g,
-        })
+        self.graph.best_path()
     }
 
     /// The number of tree vertices, including the start.
     #[must_use]
     pub fn vertex_count(&self) -> usize {
-        self.count(Kind::Vertex)
+        self.graph.count(Kind::Vertex)
     }
 
     /// The number of samples not connected to the tree.
     #[must_use]
     pub fn sample_count(&self) -> usize {
-        self.count(Kind::Sample)
+        self.graph.count(Kind::Sample)
     }
 
     /// The number of batches started so far.
     #[must_use]
     pub const fn batch_count(&self) -> usize {
-        self.batches
-    }
-
-    /// The number of stored states of `kind`.
-    fn count(&self, kind: Kind) -> usize {
-        self.nodes.iter().filter(|node| node.kind == kind).count()
+        self.graph.batches
     }
 }

@@ -1,5 +1,5 @@
-//! The forward tree and batch graph shared by AIT* and EIT*: stored states, informed batches,
-//! pruning, the batch's random geometric graph and the best solution.
+//! The forward tree shared by BIT*, AIT* and EIT* (stored states, informed batches, pruning
+//! and the best solution), and the batch graph AIT* and EIT* search twice.
 
 use alloc::vec::Vec;
 
@@ -24,10 +24,33 @@ pub(super) enum Kind {
     Pruned,
 }
 
-/// One stored state: a forward-tree vertex or a sample, with its batch-graph neighbors and
-/// the planner's reverse-search values in `ext`.
+/// What a planner keeps per stored state beyond the forward tree.
+pub(super) trait Extension: Default {
+    /// Called when the vertex is cut from the tree; `recycled` tells whether it stays a
+    /// sample rather than being pruned.
+    fn disconnected(&mut self, recycled: bool) {
+        let _ = recycled;
+    }
+}
+
+/// A state's neighbors in the batch graph that AIT* and EIT* search; BIT* uses `()`.
+#[derive(Debug, Clone, Default)]
+pub(super) struct Links {
+    /// The neighbors in this batch's graph: the RGG neighbors, symmetrized, plus the forward
+    /// tree edges at the start of the batch. Sorted ascending, no duplicates. Valid while
+    /// `adjacent_batch` is the current batch; see [`BatchGraph::ensure_adjacent`].
+    pub(super) adjacent: Vec<usize>,
+    /// The batch whose graph `adjacent` holds; `0` before the first batch.
+    pub(super) adjacent_batch: usize,
+    /// The forward-tree parent and children at the start of the batch, which join the
+    /// lazily built neighbor list.
+    pub(super) tree: Vec<usize>,
+}
+
+/// One stored state: a forward-tree vertex or a sample, with its batch-graph `links` and the
+/// planner's own values in `ext`.
 #[derive(Debug, Clone)]
-pub(super) struct Node<S, X> {
+pub(super) struct Node<S, X, L = Links> {
     /// The state.
     pub(super) state: S,
     /// What the state currently is.
@@ -43,20 +66,13 @@ pub(super) struct Node<S, X> {
     pub(super) parent: Option<usize>,
     /// The forward-tree children.
     pub(super) children: Vec<usize>,
-    /// The neighbors in this batch's graph: the RGG neighbors, symmetrized, plus the forward
-    /// tree edges at the start of the batch. Sorted ascending, no duplicates. Valid while
-    /// `adjacent_batch` is the current batch; see [`BatchGraph::ensure_adjacent`].
-    pub(super) adjacent: Vec<usize>,
-    /// The batch whose graph `adjacent` holds; `0` before the first batch.
-    pub(super) adjacent_batch: usize,
-    /// The forward-tree parent and children at the start of the batch, which join the
-    /// lazily built neighbor list.
-    pub(super) tree_links: Vec<usize>,
+    /// The batch-graph neighbors.
+    pub(super) links: L,
     /// The planner's own per-state values.
     pub(super) ext: X,
 }
 
-impl<S, X> Node<S, X> {
+impl<S, X, L> Node<S, X, L> {
     /// The admissible solution cost through this state, `f_hat = g_hat + h_hat`.
     pub(super) fn f_hat(&self) -> f64 {
         self.g_hat + self.h_hat
@@ -70,7 +86,7 @@ impl<S, X> Node<S, X> {
 
 /// The problem, the stored states with their forward tree, and this batch's graph.
 #[derive(Debug, Clone)]
-pub(super) struct BatchGraph<Sp: StateSpace, Sa, C, N, X> {
+pub(super) struct BatchGraph<Sp: StateSpace, Sa, C, N, X, L = Links> {
     /// The configuration space.
     pub(super) space: Sp,
     /// Draws the batch samples.
@@ -84,7 +100,7 @@ pub(super) struct BatchGraph<Sp: StateSpace, Sa, C, N, X> {
     /// The batch size, neighbor rule and edge cap.
     pub(super) config: BitStarConfig,
     /// Every stored state; ids index this list and are never reused.
-    pub(super) nodes: Vec<Node<Sp::State, X>>,
+    pub(super) nodes: Vec<Node<Sp::State, X, L>>,
     /// An empty index, cloned for every rebuild.
     prototype: N,
     /// Index over the live (not pruned) states of the current batch.
@@ -97,17 +113,18 @@ pub(super) struct BatchGraph<Sp: StateSpace, Sa, C, N, X> {
     pub(super) neighborhood: Neighborhood,
     /// The number of batches started so far.
     pub(super) batches: usize,
-    /// Radius neighbor lists carried across batches.
+    /// Radius neighbor lists carried across batches; unused without [`Links`].
     neighbor_cache: NeighborCache,
 }
 
-impl<Sp, Sa, C, N, X> BatchGraph<Sp, Sa, C, N, X>
+impl<Sp, Sa, C, N, X, L> BatchGraph<Sp, Sa, C, N, X, L>
 where
     Sp: StateSpace,
     Sa: Sampler<Sp::State>,
     C: ValidityChecker<Sp>,
     N: NearestNeighbors<Sp> + Clone,
-    X: Default,
+    X: Extension,
+    L: Default,
 {
     /// Checks `config` and the start, stores the start as vertex `0` and the goal center as
     /// the first sample, if it is valid.
@@ -182,33 +199,16 @@ where
             kind,
             parent: None,
             children: Vec::new(),
-            adjacent: Vec::new(),
-            adjacent_batch: 0,
-            tree_links: Vec::new(),
+            links: L::default(),
             ext: X::default(),
         });
 
         id
     }
 
-    /// Starts the next batch: prunes once a solution exists, samples, reindexes and fixes
-    /// the batch graph.
-    pub(super) fn next_batch<R: Rng + ?Sized>(&mut self, rng: &mut R) {
-        self.batches += 1;
-
-        if self.best_cost.is_finite() {
-            self.prune();
-        }
-
-        let first_new = self.nodes.len();
-        self.sample_batch(rng);
-        self.reindex();
-        self.build_graph(first_new);
-    }
-
     /// Removes the samples and vertices that cannot improve the solution, as BIT* does
     /// (Gammell et al. 2020, Algorithm 3); vertices that still could are kept as samples.
-    fn prune(&mut self) {
+    pub(super) fn prune(&mut self) {
         let c = self.best_cost;
 
         for node in &mut self.nodes {
@@ -264,14 +264,18 @@ where
         let node = &mut self.nodes[v];
         node.kind = if recycle { Kind::Sample } else { Kind::Pruned };
         node.g = f64::INFINITY;
+        node.ext.disconnected(recycle);
 
         for child in core::mem::take(&mut node.children) {
             self.nodes[child].parent = None;
         }
     }
 
-    /// Draws up to `batch_size` valid samples that can improve the solution.
-    fn sample_batch<R: Rng + ?Sized>(&mut self, rng: &mut R) {
+    /// Draws up to `batch_size` valid samples that can improve the solution and returns how
+    /// many were added.
+    pub(super) fn sample_batch<R: Rng + ?Sized>(&mut self, rng: &mut R) -> usize {
+        let mut added = 0;
+
         for _ in 0..self.config.batch_size {
             let informed = Informed {
                 space: &self.space,
@@ -283,13 +287,15 @@ where
 
             if let Some(state) = informed.draw(&mut self.sampler, rng) {
                 self.push_node(state, Kind::Sample);
+                added += 1;
             }
         }
+
+        added
     }
 
-    /// Rebuilds the index over all vertices and samples and fixes this batch's neighbor rule
-    /// from `q = |V| + |X_unconn|`, the new batch included, and the informed set's measure.
-    fn reindex(&mut self) {
+    /// Rebuilds the index over all vertices and samples; returns how many it holds.
+    pub(super) fn rebuild_index(&mut self) -> usize {
         self.nn = self.prototype.clone();
         let mut live: usize = 0;
 
@@ -299,6 +305,38 @@ where
                 live += 1;
             }
         }
+
+        live
+    }
+}
+
+impl<Sp, Sa, C, N, X> BatchGraph<Sp, Sa, C, N, X>
+where
+    Sp: StateSpace,
+    Sa: Sampler<Sp::State>,
+    C: ValidityChecker<Sp>,
+    N: NearestNeighbors<Sp> + Clone,
+    X: Extension,
+{
+    /// Starts the next batch: prunes once a solution exists, samples, reindexes and fixes
+    /// the batch graph.
+    pub(super) fn next_batch<R: Rng + ?Sized>(&mut self, rng: &mut R) {
+        self.batches += 1;
+
+        if self.best_cost.is_finite() {
+            self.prune();
+        }
+
+        let first_new = self.nodes.len();
+        self.sample_batch(rng);
+        self.reindex();
+        self.build_graph(first_new);
+    }
+
+    /// Rebuilds the index over all vertices and samples and fixes this batch's neighbor rule
+    /// from `q = |V| + |X_unconn|`, the new batch included, and the informed set's measure.
+    fn reindex(&mut self) {
+        let live = self.rebuild_index();
 
         // As OMPL: every informed state counts, the new batch included, and the radius
         // shrinks with the informed set's measure.
@@ -324,8 +362,8 @@ where
     /// [`Dubins`](crate::Dubins); those build the whole symmetrized graph here.
     fn build_graph(&mut self, first_new: usize) {
         for node in &mut self.nodes {
-            node.adjacent.clear();
-            node.tree_links.clear();
+            node.links.adjacent.clear();
+            node.links.tree.clear();
         }
 
         for id in 0..self.nodes.len() {
@@ -334,8 +372,8 @@ where
             }
 
             if let Some(parent) = self.nodes[id].parent {
-                self.nodes[id].tree_links.push(parent);
-                self.nodes[parent].tree_links.push(id);
+                self.nodes[id].links.tree.push(parent);
+                self.nodes[parent].links.tree.push(id);
             }
         }
 
@@ -360,19 +398,19 @@ where
             self.query_neighbors(id, &mut near);
 
             for &other in &near {
-                self.nodes[id].adjacent.push(other);
-                self.nodes[other].adjacent.push(id);
+                self.nodes[id].links.adjacent.push(other);
+                self.nodes[other].links.adjacent.push(id);
             }
         }
 
         for id in 0..self.nodes.len() {
-            let links = core::mem::take(&mut self.nodes[id].tree_links);
+            let links = core::mem::take(&mut self.nodes[id].links.tree);
             let node = &mut self.nodes[id];
-            node.adjacent.extend_from_slice(&links);
-            node.adjacent.sort_unstable();
-            node.adjacent.dedup();
-            node.adjacent_batch = self.batches;
-            node.tree_links = links;
+            node.links.adjacent.extend_from_slice(&links);
+            node.links.adjacent.sort_unstable();
+            node.links.adjacent.dedup();
+            node.links.adjacent_batch = self.batches;
+            node.links.tree = links;
         }
     }
 
@@ -407,21 +445,21 @@ where
     /// states within the connection radius, from the carried list or a fresh query, and the
     /// tree links, sorted. Pruned states have none.
     pub(super) fn ensure_adjacent(&mut self, x: usize) {
-        if self.nodes[x].adjacent_batch == self.batches {
+        if self.nodes[x].links.adjacent_batch == self.batches {
             return;
         }
 
-        let mut near = core::mem::take(&mut self.nodes[x].adjacent);
+        let mut near = core::mem::take(&mut self.nodes[x].links.adjacent);
         near.clear();
 
         if self.nodes[x].kind != Kind::Pruned {
             self.radius_neighbors(x, &mut near);
-            merge_sorted(&mut near, &self.nodes[x].tree_links);
+            merge_sorted(&mut near, &self.nodes[x].links.tree);
         }
 
         let node = &mut self.nodes[x];
-        node.adjacent = near;
-        node.adjacent_batch = self.batches;
+        node.links.adjacent = near;
+        node.links.adjacent_batch = self.batches;
     }
 
     /// Replaces `out` with the radius neighbors of `x` in this batch: its carried list,
@@ -462,7 +500,7 @@ where
     }
 }
 
-impl<Sp: StateSpace, Sa, C, N, X> BatchGraph<Sp, Sa, C, N, X> {
+impl<Sp: StateSpace, Sa, C, N, X, L> BatchGraph<Sp, Sa, C, N, X, L> {
     /// The admissible edge cost estimate `c_hat(from, to) = d(from, to)`, in travel direction.
     pub(super) fn cost_estimate(&self, from: usize, to: usize) -> f64 {
         self.space

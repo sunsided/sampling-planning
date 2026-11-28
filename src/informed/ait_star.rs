@@ -10,7 +10,7 @@ use core::fmt;
 
 use rand_core::Rng;
 
-use super::batch_graph::{BatchGraph, Kind, START};
+use super::batch_graph::{BatchGraph, Extension, Kind, START};
 use super::queues::{EdgeEntry, VertexEntry};
 use super::{BitStarConfig, Error};
 #[cfg(doc)]
@@ -44,6 +44,8 @@ struct AitExt {
     /// across batches.
     invalid: Vec<usize>,
 }
+
+impl Extension for AitExt {}
 
 impl Default for AitExt {
     fn default() -> Self {
