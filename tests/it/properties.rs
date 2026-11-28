@@ -116,31 +116,67 @@ proptest! {
         k in 0..12_usize,
         weight in 0.01..10.0_f64,
     ) {
-        let space = Se3::new(weight);
-        let mut tree = VpTree::new(space);
-        let mut linear = LinearScan::default();
-
-        for (id, state) in states.iter().enumerate() {
-            // Every fourth id repeats an earlier one, so removal order matters.
-            let id = if id % 4 == 3 { id / 2 } else { id };
-            tree.insert(id, *state);
-            NearestNeighbors::<Se3>::insert(&mut linear, id, *state);
-        }
-
-        for id in removals {
-            prop_assert_eq!(tree.remove(id), RemovableNeighbors::<Se3>::remove(&mut linear, id));
-        }
-
-        prop_assert_eq!(tree.len(), NearestNeighbors::<Se3>::len(&linear));
-        let (mut a, mut b) = (Vec::new(), Vec::new());
-        for query in &queries {
-            prop_assert_eq!(tree.nearest(&space, query), linear.nearest(&space, query));
-            tree.within_radius(&space, query, radius, &mut a);
-            linear.within_radius(&space, query, radius, &mut b);
-            prop_assert_eq!(&a, &b);
-            tree.k_nearest(&space, query, k, &mut a);
-            linear.k_nearest(&space, query, k, &mut b);
-            prop_assert_eq!(&a, &b);
-        }
+        assert_vp_tree_matches_linear_scan(&Se3::new(weight), &states, &removals, &queries, radius, k)?;
     }
+
+    #[test]
+    fn vp_tree_answers_exactly_like_a_linear_scan_over_se2_and_reeds_shepp(
+        states in prop::collection::vec(pose(), 1..200),
+        removals in prop::collection::vec(0..200_usize, 0..40),
+        queries in prop::collection::vec(pose(), 1..6),
+        radius in 0.0..40.0_f64,
+        k in 0..10_usize,
+        turning in 0.1..10.0_f64,
+    ) {
+        assert_vp_tree_matches_linear_scan(&Se2::new(turning), &states, &removals, &queries, radius, k)?;
+        assert_vp_tree_matches_linear_scan(
+            &ReedsShepp::new(turning), &states, &removals, &queries, radius, k,
+        )?;
+    }
+}
+
+/// Fills a [`VpTree`] and a [`LinearScan`] with `states` (every fourth id repeating an earlier
+/// one, so removal order matters), removes `removals` from both, and checks that all three
+/// queries agree for every query state.
+fn assert_vp_tree_matches_linear_scan<Sp>(
+    space: &Sp,
+    states: &[Sp::State],
+    removals: &[usize],
+    queries: &[Sp::State],
+    radius: f64,
+    k: usize,
+) -> Result<(), TestCaseError>
+where
+    Sp: StateSpace + Clone,
+    Sp::State: Clone,
+{
+    let mut tree = VpTree::new(space.clone());
+    let mut linear = LinearScan::default();
+
+    for (id, state) in states.iter().enumerate() {
+        let id = if id % 4 == 3 { id / 2 } else { id };
+        tree.insert(id, state.clone());
+        NearestNeighbors::<Sp>::insert(&mut linear, id, state.clone());
+    }
+
+    for &id in removals {
+        prop_assert_eq!(
+            tree.remove(id),
+            RemovableNeighbors::<Sp>::remove(&mut linear, id)
+        );
+    }
+
+    prop_assert_eq!(tree.len(), NearestNeighbors::<Sp>::len(&linear));
+    let (mut a, mut b) = (Vec::new(), Vec::new());
+    for query in queries {
+        prop_assert_eq!(tree.nearest(space, query), linear.nearest(space, query));
+        tree.within_radius(space, query, radius, &mut a);
+        linear.within_radius(space, query, radius, &mut b);
+        prop_assert_eq!(&a, &b);
+        tree.k_nearest(space, query, k, &mut a);
+        linear.k_nearest(space, query, k, &mut b);
+        prop_assert_eq!(&a, &b);
+    }
+
+    Ok(())
 }

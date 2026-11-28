@@ -545,7 +545,8 @@ cost-to-go incrementally.
 
 `EitStar` follows OMPL's `EITstar` (Strub; Strub and Gammell 2022, IJRR
 41(4), arXiv 2111.01877) without multi-query planning. It shares BIT*'s
-batches, pruning and radius (`batch.rs`) and AIT*'s symmetrized batch graph,
+batches and pruning, AIT*'s OMPL radius rule (`batch.rs`) and AIT*'s
+symmetrized, lazily built batch graph,
 but not AIT*'s LPA*: EIT*'s reverse search is a cost-ordered A* over edges from
 the goal states that is restarted, not repaired.
 

@@ -126,6 +126,10 @@ impl Se3 {
 impl StateSpace for Se3 {
     type State = Se3State;
 
+    fn is_symmetric(&self) -> bool {
+        true
+    }
+
     fn dimension(&self) -> usize {
         6
     }

@@ -56,6 +56,10 @@ pub struct So2;
 impl StateSpace for So2 {
     type State = f64;
 
+    fn is_symmetric(&self) -> bool {
+        true
+    }
+
     fn dimension(&self) -> usize {
         1
     }

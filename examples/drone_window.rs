@@ -10,8 +10,9 @@
 //! only needs the metric and returns exactly what a linear scan would.
 //!
 //! With `--features parallel` the example also grows one RRT* tree per thread with
-//! [`grow_forest`](sampling_planning::trees::grow_forest) and merges the trees, which buys
-//! several times the samples in little more than the time of one tree.
+//! [`grow_forest`](sampling_planning::trees::grow_forest) and merges the trees. The trees grow
+//! in parallel, but merging them costs one RRT* insertion per node: with 20 threads the forest
+//! took about 6 s for 39k nodes, against 15 s for one tree grown to the same size.
 //!
 //! Run with `cargo run --release --example drone_window [seed]`, or with
 //! `cargo run --release --features parallel --example drone_window [seed]`.

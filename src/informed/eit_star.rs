@@ -22,7 +22,7 @@ use queue::ForwardQueue;
 ///
 /// EIT* computes the batch radius as OMPL does: `q` counts every stored state, the newest
 /// batch included, and `gamma` shrinks with the informed set's share of the sampled domain
-/// ([`Sampler::informed_fraction`]). Radius neighborhoods assume a symmetric distance.
+/// ([`Sampler::informed_fraction`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EitStarConfig {
     /// The batch size, neighbor rule and edge cap, as for [`BitStar`](super::BitStar).
@@ -558,8 +558,9 @@ where
     /// in the batch ([`EitStar::ensure_adjacent`]), as OMPL does: a radius query from `x`
     /// finds exactly the states whose own query would find `x` (the distance is symmetric),
     /// so a lazy list equals the symmetrized one, and states the searches never touch cost
-    /// nothing. `k` nearest neighbors are not symmetric, so that rule builds the whole
-    /// symmetrized graph here.
+    /// nothing. `k` nearest neighbors are not symmetric, and neither are radius neighborhoods
+    /// in a space that is not [symmetric](StateSpace::is_symmetric), such as
+    /// [`Dubins`](crate::Dubins); those build the whole symmetrized graph here.
     fn build_graph(&mut self) {
         for node in &mut self.nodes {
             node.adjacent.clear();
@@ -577,7 +578,7 @@ where
             }
         }
 
-        if matches!(self.neighborhood, Neighborhood::Nearest(_)) {
+        if matches!(self.neighborhood, Neighborhood::Nearest(_)) || !self.space.is_symmetric() {
             self.build_symmetrized_graph();
         }
     }

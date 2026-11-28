@@ -23,7 +23,7 @@ use crate::{GoalRegion, LinearScan, NearestNeighbors, Path, Sampler, StateSpace,
 /// AIT* computes the batch radius as OMPL does: `q` counts every stored state, the newest
 /// batch included, and `gamma` shrinks with the informed set's share of the sampled domain
 /// ([`Sampler::informed_fraction`]), so the batch graph stays sparse once a solution shrinks
-/// the informed set. Radius neighborhoods assume a symmetric distance.
+/// the informed set.
 pub type AitStarConfig = BitStarConfig;
 
 /// What a stored state currently is.
@@ -499,8 +499,9 @@ where
     /// expansion in the batch ([`AitStar::ensure_adjacent`]), as OMPL does: a radius query
     /// from `x` finds exactly the states whose own query would find `x` (the distance is
     /// symmetric), so a lazy list equals the symmetrized one, and states the searches never
-    /// touch cost nothing. `k` nearest neighbors are not symmetric, so that rule builds the
-    /// whole symmetrized graph here.
+    /// touch cost nothing. `k` nearest neighbors are not symmetric, and neither are radius
+    /// neighborhoods in a space that is not [symmetric](StateSpace::is_symmetric), such as
+    /// [`Dubins`](crate::Dubins); those build the whole symmetrized graph here.
     fn build_graph(&mut self) {
         for node in &mut self.nodes {
             node.adjacent.clear();
@@ -518,7 +519,7 @@ where
             }
         }
 
-        if matches!(self.neighborhood, Neighborhood::Nearest(_)) {
+        if matches!(self.neighborhood, Neighborhood::Nearest(_)) || !self.space.is_symmetric() {
             self.build_symmetrized_graph();
         }
     }
