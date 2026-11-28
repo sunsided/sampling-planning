@@ -126,7 +126,12 @@ impl<const N: usize> LoewnerBound<N> {
         let metric = Self {
             factor: cholesky(metric).expect("`meet` checked that the metric factorizes"),
         };
-        let t = self.eigenvalue_floor().min(metric.eigenvalue_floor());
+        // Both floors are positive in exact arithmetic, but `|L^-1|_F^2` can overflow for a
+        // numerically singular factor; then fall back to the smallest positive normal float.
+        let t = self
+            .eigenvalue_floor()
+            .min(metric.eigenvalue_floor())
+            .max(f64::MIN_POSITIVE);
         let diagonal = libm::sqrt(t * (1.0 - 1e-9));
 
         core::array::from_fn(|i| core::array::from_fn(|j| if i == j { diagonal } else { 0.0 }))
@@ -362,6 +367,17 @@ mod tests {
     use rand_core::SeedableRng;
 
     #[test]
+    fn an_overflowing_eigenvalue_floor_still_gives_a_usable_bound() {
+        // `|L^-1|_F^2 = 1e400` overflows, so the bound's floor computes as zero.
+        let bound = LoewnerBound {
+            factor: [[1e-200, 0.0], [0.0, 1.0]],
+        };
+        let factor = bound.isotropic_below(&[[1.0, 0.0], [0.0, 1.0]]);
+
+        assert!(factor[0][0].is_normal() && factor[1][1].is_normal());
+    }
+
+    #[test]
     fn badly_conditioned_metrics_still_give_a_finite_bound_below_each() {
         // Rank-one plus up to 1e-12 times the identity: condition numbers up to about 1e12,
         // where the relative eigenvalues and the factorization lose their accuracy.
@@ -384,7 +400,10 @@ mod tests {
             // Below each metric up to rounding: `G - G_lower` positive semidefinite to within
             // `1e-9 |G|`. A relative check like `is_below` cannot be that exact here.
             let lower = bound.matrix();
-            assert!((0..2).all(|i| bound.factor()[i][i] > 0.0), "{metrics:?}");
+            assert!(
+                (0..2).all(|i| bound.factor()[i][i].is_normal()),
+                "{metrics:?}"
+            );
             for m in &metrics {
                 let gap: [[f64; 2]; 2] =
                     core::array::from_fn(|i| core::array::from_fn(|j| m[i][j] - lower[i][j]));
