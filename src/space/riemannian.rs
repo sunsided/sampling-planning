@@ -9,7 +9,7 @@ use crate::{Euclidean, StateSpace};
 /// R^N with a configuration-dependent metric tensor `G(q)`: the length of a motion is
 /// `integral of sqrt(dq^T G(q) dq)` along it.
 ///
-/// Motions are straight lines in coordinates, as in [`Euclidean`](crate::Euclidean), and
+/// Motions are straight lines in coordinates, as in [`Euclidean`], and
 /// [`StateSpace::distance`] is their length by the midpoint rule over `segments` equal pieces:
 /// `sum_k sqrt(d^T G(m_k) d)` with `d = (to - from) / segments` and `m_k` the midpoint of
 /// piece `k` (Kyaw and Kelly use the same approximation). Joint-space planning under a
