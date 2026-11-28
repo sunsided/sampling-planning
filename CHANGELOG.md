@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1](https://github.com/sunsided/sampling-planning/compare/v0.3.0...v0.3.1) - 2026-11-28
+
+### Changed
+
+- Explain and test reusing a denser EIT* sparse check
+- Clamp the Loewner fallback floor to a positive normal float
+- Search the far side of a NaN split in KdTree radius queries
+- Share the forward tree with BIT*
+- Document that SPARS quality guards grow with the dense graph
+- Name NaN distances in the panic when nearest finds nothing
+- Keep the Loewner bound finite when a meet loses precision
+- Share the AIT* and EIT* forward tree and batch graph
+- Share SPARS and SPARS2 config, edge and query code
+- Share the RRT-family tree bookkeeping
+- Smooth SPARS2 quality paths and clean up SPARS
+- Root the BFMT* goal tree at every goal-region node
+- Stop RRT-Connect loops and zero-length tree nodes
+
+### Fixed
+
+- Fix planner bugs from a repo audit and share duplicated planner code ([#18](https://github.com/sunsided/sampling-planning/pull/18))
+- Fix pruning, sparse checks and step counts in informed planners
+- Fix lazy PRM race and query radius
+- Fix NaN, rounding and overflow edge cases in spaces and indices
+
+### Removed
+
+- Drop a doc link target that the Euclidean import made redundant
+
 ## [0.3.0](https://github.com/sunsided/sampling-planning/compare/v0.2.0...v0.3.0) - 2026-11-28
 
 ### Added
