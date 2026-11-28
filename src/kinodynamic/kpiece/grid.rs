@@ -1,12 +1,15 @@
-//! KPIECE's single-level projection grid: cells, their neighbors and their importance.
+//! One level of KPIECE's projection grid: cells, their neighbors and their importance.
 
 use alloc::{collections::BTreeMap, vec::Vec};
 
 /// One instantiated grid cell.
 #[derive(Debug, Clone)]
 pub(super) struct Cell<const K: usize> {
-    /// The motions whose end states project into this cell, oldest first.
-    pub(super) motions: Vec<usize>,
+    /// On the finest level, the motions whose end states project into this cell, oldest first;
+    /// on coarser levels, the ids of the cells of the next finer level inside this cell.
+    pub(super) members: Vec<usize>,
+    /// The id of the enclosing cell on the next coarser level; `None` on the coarsest level.
+    pub(super) parent: Option<usize>,
     /// The total number of integration steps of those motions; positive.
     pub(super) coverage: f64,
     /// How often the cell was selected for expansion, plus one.
@@ -70,7 +73,8 @@ impl<const K: usize> Grid<K> {
         }
 
         self.cells.push(Cell {
-            motions: Vec::new(),
+            members: Vec::new(),
+            parent: None,
             coverage: 0.0,
             selections: 1.0,
             score,
@@ -82,36 +86,52 @@ impl<const K: usize> Grid<K> {
         id
     }
 
-    /// The share of exterior cells, or zero for an empty grid.
-    pub(super) fn exterior_fraction(&self) -> f64 {
-        let exterior = self.cells.iter().filter(|cell| !cell.is_interior()).count();
+    /// The share of exterior cells among `among` (every cell when `None`), or zero when there
+    /// are none.
+    pub(super) fn exterior_fraction(&self, among: Option<&[usize]>) -> f64 {
         let to_f64 = |n: usize| f64::from(u32::try_from(n).unwrap_or(u32::MAX));
+        let (exterior, total) = match among {
+            None => (
+                self.cells.iter().filter(|cell| !cell.is_interior()).count(),
+                self.cells.len(),
+            ),
+            Some(ids) => (
+                ids.iter()
+                    .filter(|&&id| !self.cells[id].is_interior())
+                    .count(),
+                ids.len(),
+            ),
+        };
 
-        if self.cells.is_empty() {
+        if total == 0 {
             0.0
         } else {
-            to_f64(exterior) / to_f64(self.cells.len())
+            to_f64(exterior) / to_f64(total)
         }
     }
 
-    /// The most important cell of the preferred class (exterior or interior), falling back to
-    /// the other class when it is empty; the oldest cell on ties. `None` for an empty grid.
+    /// The most important cell among `among` (every cell when `None`) of the preferred class
+    /// (exterior or interior), falling back to the other class when it is empty; the oldest
+    /// cell on ties. `None` when there are no cells.
     ///
-    /// shortcut: scans every cell, `O(cells)` per selection; OMPL keeps two binary heaps
+    /// shortcut: scans every candidate, `O(cells)` per selection; OMPL keeps two binary heaps
     /// updated on every change, which pays off beyond some ten thousand cells.
-    pub(super) fn select(&self, exterior: bool) -> Option<usize> {
-        self.best_of(|cell| cell.is_interior() != exterior)
-            .or_else(|| self.best_of(|_| true))
+    pub(super) fn select(&self, among: Option<&[usize]>, exterior: bool) -> Option<usize> {
+        self.best_of(among, |cell| cell.is_interior() != exterior)
+            .or_else(|| self.best_of(among, |_| true))
     }
 
-    /// The most important cell matching `filter`, oldest on ties.
-    fn best_of(&self, filter: impl Fn(&Cell<K>) -> bool) -> Option<usize> {
+    /// The most important cell among `among` (every cell when `None`) matching `filter`,
+    /// oldest on ties.
+    fn best_of(&self, among: Option<&[usize]>, filter: impl Fn(&Cell<K>) -> bool) -> Option<usize> {
         let mut best: Option<(usize, f64)> = None;
+        let candidates: &mut dyn Iterator<Item = usize> = match among {
+            None => &mut (0..self.cells.len()),
+            Some(ids) => &mut ids.iter().copied(),
+        };
 
-        for (id, cell) in self
-            .cells
-            .iter()
-            .enumerate()
+        for (id, cell) in candidates
+            .map(|id| (id, &self.cells[id]))
             .filter(|(_, cell)| filter(cell))
         {
             let importance = cell.importance();
@@ -165,7 +185,8 @@ mod tests {
         grid.add([0, -1], 1, 1.0);
         assert!(grid.cells[center].is_interior());
         assert_eq!(grid.cells[grid.find(&[1, 0]).expect("added")].neighbors, 1);
-        assert!((grid.exterior_fraction() - 0.8).abs() < 1e-12);
+        assert!((grid.exterior_fraction(None) - 0.8).abs() < 1e-12);
+        assert!((grid.exterior_fraction(Some(&[center])) - 0.0).abs() < 1e-12);
     }
 
     #[test]
@@ -180,11 +201,16 @@ mod tests {
         }
 
         // Cells 0 and 2 have one neighbor, cell 1 two: it is the only interior cell.
-        assert_eq!(grid.select(false), Some(right));
+        assert_eq!(grid.select(None, false), Some(right));
         assert_eq!(
-            grid.select(true),
+            grid.select(None, true),
             Some(left),
             "oldest exterior cell on ties"
+        );
+        assert_eq!(
+            grid.select(Some(&[2]), false),
+            Some(2),
+            "falls back within the subset"
         );
     }
 }

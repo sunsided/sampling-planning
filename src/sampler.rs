@@ -1,9 +1,12 @@
 //! Samplers: where planners draw new states from.
 
 mod informed;
+mod loewner;
 mod uniform_box;
 
 pub use informed::ProlateHyperspheroid;
+pub use loewner::LoewnerBound;
+pub(crate) use loewner::{cholesky, is_symmetric};
 use rand_core::Rng;
 pub use uniform_box::{INFORMED_BOX_ATTEMPTS, UniformBox};
 
@@ -33,7 +36,8 @@ pub trait Sampler<S> {
     /// allowed when an attempt budget runs out.
     ///
     /// The default returns `None`: rejection sampling, which works for every sampler and space.
-    /// [`UniformBox`] samples a [`ProlateHyperspheroid`] in Euclidean spaces.
+    /// [`UniformBox`] samples a [`ProlateHyperspheroid`] in Euclidean spaces, and in spaces
+    /// whose metric is bounded below by a [`LoewnerBound`].
     fn sample_informed<Sp, R>(
         &mut self,
         space: &Sp,

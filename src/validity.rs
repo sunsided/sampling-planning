@@ -1,5 +1,7 @@
 //! Validity checking of states and motions with a three-valued result.
 
+use alloc::vec::Vec;
+
 use crate::StateSpace;
 
 /// The outcome of a validity check.
@@ -47,6 +49,39 @@ pub trait ValidityChecker<Sp: StateSpace> {
     /// `from` is assumed to be valid already; planners only call this from tree or roadmap
     /// nodes. Use [`discretized_motion`] when only a state check is available.
     fn check_motion(&self, space: &Sp, from: &Sp::State, to: &Sp::State) -> Validity;
+
+    /// Checks many states at once: replaces the contents of `out` with one result per state,
+    /// in order.
+    ///
+    /// The default calls [`ValidityChecker::check_state`] for each state in order. Checkers
+    /// that can test many states together (SIMD, a GPU, a batched collision library) override
+    /// it; `ParallelChecker` (feature `parallel`) spreads the batch
+    /// over threads. The results must equal the single checks. [`Prm`](crate::roadmaps::Prm)
+    /// checks its samples through this.
+    fn check_states(&self, states: &[Sp::State], out: &mut Vec<Validity>) {
+        out.clear();
+        out.extend(states.iter().map(|state| self.check_state(state)));
+    }
+
+    /// Checks many motions at once: replaces the contents of `out` with one result per
+    /// `(from, to)` pair, in order.
+    ///
+    /// The default calls [`ValidityChecker::check_motion`] for each motion in order; see
+    /// [`ValidityChecker::check_states`] for overriding it. [`Prm`](crate::roadmaps::Prm)
+    /// checks the edges of each new node through this.
+    fn check_motions(
+        &self,
+        space: &Sp,
+        motions: &[(&Sp::State, &Sp::State)],
+        out: &mut Vec<Validity>,
+    ) {
+        out.clear();
+        out.extend(
+            motions
+                .iter()
+                .map(|(from, to)| self.check_motion(space, from, to)),
+        );
+    }
 }
 
 /// Checks a motion by checking interpolated states at most `resolution` apart.

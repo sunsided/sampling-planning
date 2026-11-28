@@ -9,7 +9,7 @@
 [![unsafe forbidden](https://img.shields.io/badge/unsafe-forbidden-success.svg)](https://github.com/rust-secure-code/safety-dance/)
 
 Sampling-based motion planners for continuous configuration spaces: RRT, RRT*, RRT#, RRT-Connect,
-PRM, PRM*, SPARS, SPARS2, FMT*, BFMT*, BIT*, AIT*, SST, SST* and KPIECE, together with the state
+PRM, PRM*, SPARS, SPARS2, FMT*, BFMT*, BIT*, ABIT*, AIT*, EIT*, SST, SST* and KPIECE, together with the state
 spaces, samplers, nearest-neighbor structures and path shortcutting they build on.
 
 This is a **motion planning** crate. It is named `sampling-planning` because the crate name `motion-planning` was already taken on crates.io.
@@ -48,30 +48,40 @@ sampling-planning = "0.1"
 ## Features
 
 - Tree planners: RRT, RRT* (radius or k-nearest) with optional informed sampling (Informed RRT*, with direct
-  prolate-hyperspheroid sampling in Euclidean spaces), RRT-Connect (bidirectional), RRT# (RRG with LPA*-style replanning).
+  prolate-hyperspheroid sampling in Euclidean spaces and, through a Loewner-order lower bound of the
+  metric tensor, under configuration-dependent Riemannian metrics), RRT-Connect (bidirectional), RRT# (RRG with LPA*-style replanning). RRT, RRT* and
+  RRT-Connect can retire vertices that keep failing to extend from their nearest-neighbor index.
+  With feature `parallel`, `grow_forest` grows several RRT* trees on threads and merges them.
+  RRT* minimizes any additive cost objective, such as the hybrid risk-density objective over
+  Gaussian uncertain obstacles.
 - Roadmaps: PRM (fixed radius or fixed k), PRM* (shrinking radius or `k ln n` nearest), lazy
   PRM, SPARS (sparse roadmap spanner over a dense PRM* graph), SPARS2 (without one);
-  multi-query, with Dijkstra queries on a reusable roadmap.
-- Batch-informed planners: BIT* (radius or k-nearest, informed batches, pruning) and AIT*
-  (BIT*-style forward search guided by a lazy LPA* reverse search that is repaired on every
-  invalid edge).
+  multi-query, with Dijkstra queries on a reusable roadmap, also through a shared reference with a
+  reusable query workspace and, with feature `parallel`, in batches on several threads; with
+  feature `parallel` a roadmap is also built on several threads.
+- Batch-informed planners: BIT* (radius or k-nearest, informed batches, pruning), ABIT*
+  (inflated and truncated BIT* searches), AIT* (BIT*-style forward search guided by a lazy LPA*
+  reverse search that is repaired on every invalid edge) and EIT* (effort-guided forward search
+  over a sparsely checked reverse search, few collision checks to a first solution).
 - Batch planners: FMT* (fast marching tree) and BFMT* (bidirectional, optimal or first-meeting
   termination).
 - Kinodynamic planners: SST and SST* over a `Propagator` (forward simulation) trait, with
-  inactive leaves freed; single-level KPIECE over a user projection.
+  inactive leaves freed; single- or multi-level KPIECE over a user projection.
 - Path post-processing: greedy and randomized shortcutting (`shortcut`, `shortcut_random`).
 - Nearest neighbors: `LinearScan` (any metric), `KdTree` (Euclidean spaces, with removal and
   balanced rebuilds); nearest, radius and k-nearest queries.
-- State spaces: `Euclidean<N>`, SO(2) (`So2`), SE(2) (`Se2`), Dubins and Reeds-Shepp cars
+- State spaces: `Euclidean<N>`, SO(2) (`So2`), SE(2) (`Se2`), SE(3) (`Se3`, unit quaternions),
+  `Riemannian<N, F>` (a configuration-dependent metric tensor), Dubins and Reeds-Shepp cars
   (`Dubins`, `ReedsShepp`, with their shortest paths exposed), with samplers `UniformBox`,
-  `UniformAngle` and `UniformSe2`.
+  `UniformAngle`, `UniformSe2` and `UniformSe3`.
 - Building blocks: straight-line steering (along the curve in the car spaces), ball-shaped goal
   regions.
 
 Validity checks are three-valued (valid, invalid, unknown); planners treat unknown as invalid.
+They can also come in batches, for SIMD or GPU checkers; feature `parallel` spreads batches over
+threads (`ParallelChecker`).
 
-Not yet implemented: the batch-informed ABIT* and EIT*, multi-level KPIECE, and the SE(3) and
-compound state spaces.
+Not yet implemented: compound state spaces.
 
 ## Usage
 

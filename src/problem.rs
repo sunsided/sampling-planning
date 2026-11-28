@@ -30,6 +30,7 @@ pub struct Problem<Sp: StateSpace, Sa, C, St> {
 pub struct Path<S> {
     /// The states from the start to a state in the goal region. Never empty.
     pub states: Vec<S>,
-    /// The path length under [`StateSpace::distance`].
+    /// The path length under [`StateSpace::distance`], or its cost under the
+    /// [`CostObjective`](crate::CostObjective) of a planner that takes one.
     pub cost: f64,
 }

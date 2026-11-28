@@ -1,6 +1,6 @@
 [package]
 name = "sampling-planning"
-description = "Sampling-based motion planning for no_std: RRT, RRT*, RRT-Connect, PRM, SPARS, FMT*, BIT*, AIT*, SST and KPIECE"
+description = "Sampling-based motion planning for no_std: RRT, RRT*, RRT-Connect, PRM, SPARS, FMT*, BIT*, ABIT*, AIT*, EIT*, SST and KPIECE"
 version = "0.1.1"
 edition = "2024"
 rust-version = "1.85"
@@ -25,6 +25,13 @@ exclude = [
     "rustfmt.toml",
 ]
 
+[features]
+## Links `std`. No API of its own; required by `parallel`.
+std = []
+## Multi-threaded batch validity checks (`ParallelChecker`) and batched roadmap queries
+## (`Prm::query_batch`) on `std::thread::scope`.
+parallel = ["std"]
+
 [dependencies]
 libm = "0.2.16"
 rand_core = { version = "0.10.1", default-features = false }
@@ -45,6 +52,15 @@ harness = false
 [[bench]]
 name = "spaces"
 harness = false
+
+[[bench]]
+name = "retirement"
+harness = false
+
+[[bench]]
+name = "parallel"
+harness = false
+required-features = ["parallel"]
 
 [package.metadata.docs.rs]
 all-features = true

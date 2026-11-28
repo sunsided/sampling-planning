@@ -1,10 +1,13 @@
 //! RRT-Connect: bidirectional RRT with a greedy connect step (Kuffner and LaValle 2000).
 
+use core::num::NonZeroUsize;
+
 use rand_core::Rng;
 
-use super::{Error, tree::Tree};
+use super::{Error, retirement::Retirement, tree::Tree};
 use crate::{
-    LinearScan, NearestNeighbors, Path, Problem, Sampler, StateSpace, Steering, ValidityChecker,
+    LinearScan, NearestNeighbors, Path, Problem, RemovableNeighbors, Sampler, StateSpace, Steering,
+    ValidityChecker,
 };
 
 /// Which of the two trees an operation works on.
@@ -33,6 +36,8 @@ struct Half<S, N> {
     tree: Tree<S>,
     /// Index over the tree's nodes, by node id.
     nn: N,
+    /// Removes vertices that keep failing to extend from `nn`; disabled by default.
+    retirement: Retirement<N>,
 }
 
 /// RRT-Connect: grows one tree from the start and one from the goal center, and after every
@@ -213,6 +218,13 @@ where
         self.start.tree.len() + self.goal.tree.len()
     }
 
+    /// The number of vertices of both trees retired from their nearest-neighbor indices;
+    /// always zero unless [`RrtConnect::with_retirement`] enabled retirement.
+    #[must_use]
+    pub const fn retired_count(&self) -> usize {
+        self.start.retirement.retired() + self.goal.retirement.retired()
+    }
+
     /// The tree on `side`.
     const fn half(&self, side: Side) -> &Half<Sp::State, N> {
         match side {
@@ -236,20 +248,23 @@ where
         let space = &self.problem.space;
         let tree = &self.half(side).tree;
         let new = self.problem.steering.steer(space, tree.state(from), target);
-
-        if !self.is_edge_valid(side, from, &new) {
-            return None;
-        }
-
-        let cost = tree.cost(from) + space.distance(tree.state(from), &new);
+        let valid = self.is_edge_valid(side, from, &new);
         let half = match side {
             Side::Start => &mut self.start,
             Side::Goal => &mut self.goal,
         };
-        let id = half.tree.add(new.clone(), from, cost);
-        half.nn.insert(id, new);
+        let id = valid.then(|| {
+            let cost = half.tree.cost(from) + space.distance(half.tree.state(from), &new);
+            let id = half.tree.add(new.clone(), from, cost);
+            half.retirement.note_added::<Sp>(id, new.clone());
+            half.nn.insert(id, new.clone());
 
-        Some(id)
+            id
+        });
+
+        half.record_extension(space, &self.problem.steering, from, &new, valid);
+
+        id
     }
 
     /// Greedily steers `side` toward node `target` of tree `target_side` until it reaches the
@@ -332,7 +347,55 @@ where
     }
 }
 
+impl<Sp, Sa, C, St, N> RrtConnect<Sp, Sa, C, St, N>
+where
+    Sp: StateSpace,
+    N: RemovableNeighbors<Sp> + Clone,
+{
+    /// Retires exhausted vertices of both trees from their nearest-neighbor indices: with
+    /// finite steering once all their successors are in their tree, and in any case after
+    /// `failures` consecutive failed extensions; see
+    /// [the module docs](crate::trees#vertex-retirement).
+    /// Failed steps of the greedy connect count as failed extensions too. The roots are never
+    /// retired.
+    #[must_use]
+    pub fn with_retirement(mut self, failures: NonZeroUsize) -> Self {
+        let (start, goal) = (self.start.nn.clone(), self.goal.nn.clone());
+        self.start.retirement.enable(failures, N::remove, start);
+        self.goal.retirement.enable(failures, N::remove, goal);
+        self
+    }
+}
+
 impl<S: Clone, N> Half<S, N> {
+    /// Feeds vertex retirement with the extension from `from` to `to`, like
+    /// `Growth::record_extension`.
+    fn record_extension<Sp, St>(
+        &mut self,
+        space: &Sp,
+        steering: &St,
+        from: usize,
+        to: &S,
+        valid: bool,
+    ) where
+        Sp: StateSpace<State = S>,
+        St: Steering<Sp>,
+        N: NearestNeighbors<Sp>,
+    {
+        if !self.retirement.is_enabled() {
+            return;
+        }
+
+        let from_state = self.tree.state(from);
+        let progressed = valid && space.distance(from_state, to) > 0.0;
+        self.retirement.record(&mut self.nn, from, progressed);
+
+        if let Some(successors) = steering.successors(space, from_state) {
+            self.retirement
+                .retire_if_exhausted(&mut self.nn, space, from, &successors);
+        }
+    }
+
     /// A tree holding only `root`, indexed as node `0` in the empty index `nn`.
     fn rooted<Sp>(root: S, mut nn: N) -> Self
     where
@@ -344,6 +407,7 @@ impl<S: Clone, N> Half<S, N> {
         Self {
             tree: Tree::new(root),
             nn,
+            retirement: Retirement::disabled(),
         }
     }
 }

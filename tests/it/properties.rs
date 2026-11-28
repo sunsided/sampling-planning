@@ -1,4 +1,4 @@
-//! Property tests for the angle helpers and the SO(2), SE(2) and car-like metrics.
+//! Property tests for the angle helpers and the SO(2), SE(2), SE(3) and car-like metrics.
 //!
 //! The planner tests run on a few fixed worlds; these cover the numeric building blocks over
 //! their whole documented domain instead. `task test:prop` raises the case count.
@@ -7,7 +7,7 @@ use core::f64::consts::{PI, TAU};
 
 use proptest::prelude::*;
 use sampling_planning::{
-    Dubins, ReedsShepp, Se2, Se2State, So2, StateSpace, angle_difference, wrap_angle,
+    Dubins, ReedsShepp, Se2, Se2State, Se3, Se3State, So2, StateSpace, angle_difference, wrap_angle,
 };
 
 /// Any angle within a thousand turns; wrapping must stay exact enough there.
@@ -18,6 +18,18 @@ fn angle() -> impl Strategy<Value = f64> {
 /// A pose in `[-50, 50]^2` with an unwrapped heading.
 fn pose() -> impl Strategy<Value = Se2State> {
     (-50.0..50.0, -50.0..50.0, angle()).prop_map(|(x, y, theta)| Se2State::new(x, y, theta))
+}
+
+/// A spatial pose in `[-50, 50]^3` with an arbitrary (normalized) quaternion.
+fn spatial_pose() -> impl Strategy<Value = Se3State> {
+    (
+        [-50.0..50.0, -50.0..50.0, -50.0..50.0_f64],
+        [-1.0..1.0, -1.0..1.0, -1.0..1.0, -1.0..1.0_f64],
+    )
+        .prop_filter("non-zero quaternion", |(_, q)| {
+            q.iter().map(|c| c * c).sum::<f64>() > 1e-6
+        })
+        .prop_map(|(position, rotation)| Se3State::new(position, rotation))
 }
 
 /// Whether `a` and `b` are the same orientation up to `tolerance` radians.
@@ -57,6 +69,26 @@ proptest! {
         prop_assert!(ab >= 0.0);
         prop_assert!((ab - space.distance(&b, &a)).abs() < 1e-9);
         prop_assert!(space.distance(&a, &c) <= ab + space.distance(&b, &c) + 1e-9);
+    }
+
+    #[test]
+    fn se3_distance_is_a_metric_and_interpolation_its_geodesic(
+        a in spatial_pose(),
+        b in spatial_pose(),
+        c in spatial_pose(),
+        weight in 0.01..10.0_f64,
+        t in 0.0..1.0_f64,
+    ) {
+        let space = Se3::new(weight);
+        let ab = space.distance(&a, &b);
+        let x = space.interpolate(&a, &b, t);
+        let flipped = Se3State { rotation: b.rotation.map(|q| -q), ..b };
+
+        prop_assert!(ab >= 0.0);
+        prop_assert!((ab - space.distance(&b, &a)).abs() < 1e-9);
+        prop_assert!((ab - space.distance(&a, &flipped)).abs() < 1e-9);
+        prop_assert!(space.distance(&a, &c) <= ab + space.distance(&b, &c) + 1e-9);
+        prop_assert!((space.distance(&a, &x) - t * ab).abs() < 1e-7 * (1.0 + ab));
     }
 
     #[test]

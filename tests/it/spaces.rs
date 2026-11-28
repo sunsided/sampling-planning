@@ -1,10 +1,10 @@
-//! Integration tests for the planners over SE(2), Dubins and Reeds-Shepp spaces.
+//! Integration tests for the planners over SE(2), SE(3), Dubins and Reeds-Shepp spaces.
 
 use rand_core::SeedableRng;
 use rand_pcg::Pcg64Mcg;
 use sampling_planning::{
-    Dubins, GoalRegion, Path, Problem, ReedsShepp, Se2, Se2State, StateSpace, StraightLine,
-    UniformSe2, Validity, ValidityChecker, discretized_motion,
+    Dubins, GoalRegion, Path, Problem, ReedsShepp, Se2, Se2State, Se3, Se3State, StateSpace,
+    StraightLine, UniformSe2, UniformSe3, Validity, ValidityChecker, discretized_motion,
     trees::{Rrt, RrtConfig, RrtStar, RrtStarConfig},
 };
 
@@ -121,4 +121,71 @@ fn rrt_star_plans_over_reeds_shepp_and_improves() {
         .expect("RRT* solves the Reeds-Shepp yard");
     assert_solves(&space, &path);
     assert!(costs.windows(2).all(|pair| pair[1] <= pair[0]), "{costs:?}");
+}
+
+/// A 10 x 10 x 10 room with a slab at `4 <= x <= 6` that leaves only `z > 7` open; positions
+/// outside the room are invalid, every orientation is allowed.
+#[derive(Debug, Clone, Copy)]
+struct Room;
+
+impl Room {
+    /// The validity of a pose by its position.
+    fn check(state: &Se3State) -> Validity {
+        let [x, y, z] = state.position;
+        let inside = [x, y, z].iter().all(|c| (0.0..=10.0).contains(c));
+        let slab = (4.0..=6.0).contains(&x) && z <= 7.0;
+
+        if inside && !slab {
+            Validity::Valid
+        } else {
+            Validity::Invalid
+        }
+    }
+}
+
+impl ValidityChecker<Se3> for Room {
+    fn check_state(&self, state: &Se3State) -> Validity {
+        Self::check(state)
+    }
+
+    fn check_motion(&self, space: &Se3, from: &Se3State, to: &Se3State) -> Validity {
+        discretized_motion(space, from, to, 0.05, Self::check)
+    }
+}
+
+#[test]
+fn rrt_star_plans_over_se3_and_turns_toward_the_goal_orientation() {
+    let space = Se3::new(0.5);
+    let goal = Se3State::from_axis_angle([9.0, 5.0, 1.0], [0.0, 0.0, 1.0], 2.0);
+    let problem = Problem {
+        space,
+        sampler: UniformSe3::new([0.0; 3], [10.0; 3]),
+        checker: Room,
+        steering: StraightLine::new(1.5),
+        start: Se3State::at([1.0, 5.0, 1.0]),
+        goal: GoalRegion::new(goal, 0.6),
+    };
+    let mut planner = RrtStar::new(problem.clone(), RrtStarConfig::new(60.0, 1.5)).expect("valid");
+    planner.run(4000, &mut Pcg64Mcg::seed_from_u64(4));
+
+    let path = planner.best_path().expect("RRT* solves the SE(3) room");
+    assert_eq!(path.states.first(), Some(&problem.start));
+    assert!(
+        problem
+            .goal
+            .contains(&space, path.states.last().expect("non-empty"))
+    );
+
+    let mut length = 0.0;
+    for pair in path.states.windows(2) {
+        assert_eq!(
+            Room.check_motion(&space, &pair[0], &pair[1]),
+            Validity::Valid
+        );
+        length += space.distance(&pair[0], &pair[1]);
+    }
+
+    assert!((length - path.cost).abs() < 1e-9);
+    // The path climbs over the slab: at least 12 in position, up to 2 radians of turning.
+    assert!(path.cost > 12.0, "{}", path.cost);
 }

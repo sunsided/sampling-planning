@@ -4,14 +4,18 @@ mod curve;
 mod dubins;
 mod euclidean;
 mod reeds_shepp;
+mod riemannian;
 mod se2;
+mod se3;
 mod so2;
 
 pub use curve::{Segment, SegmentKind};
 pub use dubins::{Dubins, DubinsPath, DubinsWord};
 pub use euclidean::Euclidean;
 pub use reeds_shepp::{ReedsShepp, ReedsSheppPath};
+pub use riemannian::Riemannian;
 pub use se2::{Se2, Se2State, UniformSe2};
+pub use se3::{Se3, Se3State, UniformSe3};
 pub use so2::{So2, UniformAngle, angle_difference, wrap_angle};
 
 /// A continuous configuration space with a metric and a geodesic interpolation.

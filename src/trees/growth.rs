@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use rand_core::Rng;
 
-use super::{Error, targets::draw_target, tree::Tree};
+use super::{Error, retirement::Retirement, targets::draw_target, tree::Tree};
 use crate::{NearestNeighbors, Path, Problem, Sampler, StateSpace, Steering, ValidityChecker};
 
 /// A growing tree over a [`Problem`], with its nearest-neighbor index and goal nodes.
@@ -20,6 +20,8 @@ pub(super) struct Growth<Sp: StateSpace, Sa, C, St, N> {
     goal_nodes: Vec<usize>,
     /// Probability in `[0, 1]` of sampling the goal center instead of the sampler.
     pub(super) goal_bias: f64,
+    /// Removes vertices that keep failing to extend from `nn`; disabled by default.
+    pub(super) retirement: Retirement<N>,
 }
 
 impl<Sp, Sa, C, St, N> Growth<Sp, Sa, C, St, N>
@@ -61,7 +63,28 @@ where
             nn,
             goal_nodes,
             goal_bias,
+            retirement: Retirement::disabled(),
         })
+    }
+
+    /// Records whether the extension from node `from` to the steered state `to` made progress
+    /// (the motion was valid and moved away from `from`), and retires `from` once that failed
+    /// too often or, for finite steering, once all its successors are in the tree. Call it
+    /// after adding the new node, if any.
+    pub(super) fn record_extension(&mut self, from: usize, to: &Sp::State, valid: bool) {
+        if !self.retirement.is_enabled() {
+            return;
+        }
+
+        let (space, steering) = (&self.problem.space, &self.problem.steering);
+        let from_state = self.tree.state(from);
+        let progressed = valid && space.distance(from_state, to) > 0.0;
+        self.retirement.record(&mut self.nn, from, progressed);
+
+        if let Some(successors) = steering.successors(space, from_state) {
+            self.retirement
+                .retire_if_exhausted(&mut self.nn, space, from, &successors);
+        }
     }
 
     /// Picks the nearest node to a goal-biased sample and steers from it.
@@ -114,6 +137,7 @@ where
         }
 
         let id = self.tree.add(state.clone(), parent, cost);
+        self.retirement.note_added::<Sp>(id, state.clone());
         self.nn.insert(id, state);
 
         id

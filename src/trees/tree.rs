@@ -2,8 +2,6 @@
 
 use alloc::vec::Vec;
 
-use crate::StateSpace;
-
 /// A rooted tree of states with path costs. Node `0` is the root.
 #[derive(Debug, Clone)]
 pub(super) struct Tree<S> {
@@ -67,14 +65,17 @@ impl<S: Clone> Tree<S> {
     }
 
     /// Moves node `id` under `parent` with the new path cost `cost`, then recomputes the costs
-    /// of all its descendants.
+    /// of all its descendants with `edge_cost(parent state, child state)`.
     ///
-    /// Descendant costs use the same formula as when they were added (parent cost plus
-    /// distance), so when `cost` is lower, no descendant cost increases, not even by rounding.
-    pub(super) fn reparent<Sp>(&mut self, space: &Sp, id: usize, parent: usize, cost: f64)
-    where
-        Sp: StateSpace<State = S>,
-    {
+    /// Descendant costs use the same formula as when they were added (parent cost plus edge
+    /// cost), so when `cost` is lower, no descendant cost increases, not even by rounding.
+    pub(super) fn reparent(
+        &mut self,
+        id: usize,
+        parent: usize,
+        cost: f64,
+        edge_cost: impl Fn(&S, &S) -> f64,
+    ) {
         if let Some(old) = self.nodes[id].parent {
             self.nodes[old].children.retain(|&child| child != id);
         }
@@ -82,22 +83,25 @@ impl<S: Clone> Tree<S> {
         self.nodes[id].parent = Some(parent);
         self.nodes[id].cost = cost;
         self.nodes[parent].children.push(id);
-        self.propagate_costs(space, id);
+        self.propagate_costs(id, edge_cost);
     }
 
     /// Recomputes the costs of all descendants of `id` from their parents' costs.
-    fn propagate_costs<Sp>(&mut self, space: &Sp, id: usize)
-    where
-        Sp: StateSpace<State = S>,
-    {
+    fn propagate_costs(&mut self, id: usize, edge_cost: impl Fn(&S, &S) -> f64) {
         let mut stack = self.nodes[id].children.clone();
 
         while let Some(child) = stack.pop() {
             let parent = self.nodes[child].parent.expect("a child has a parent");
-            let edge = space.distance(&self.nodes[parent].state, &self.nodes[child].state);
+            let edge = edge_cost(&self.nodes[parent].state, &self.nodes[child].state);
             self.nodes[child].cost = self.nodes[parent].cost + edge;
             stack.extend_from_slice(&self.nodes[child].children);
         }
+    }
+
+    /// All states in insertion order, the root first; parents come before their children.
+    #[cfg(feature = "parallel")]
+    pub(super) fn states(&self) -> impl Iterator<Item = &S> {
+        self.nodes.iter().map(|node| &node.state)
     }
 
     /// The states from the root to node `id`.
@@ -118,7 +122,7 @@ impl<S: Clone> Tree<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Euclidean;
+    use crate::{Euclidean, StateSpace};
 
     #[test]
     fn reparent_updates_descendants_and_children() {
@@ -129,11 +133,12 @@ mod tests {
         let c = tree.add([7.0], b, 7.0);
         let shortcut = tree.add([5.5], 0, 5.5);
 
-        tree.reparent(&space, b, shortcut, 6.0);
+        let distance = |a: &[f64; 1], b: &[f64; 1]| space.distance(a, b);
+        tree.reparent(b, shortcut, 6.0, distance);
         assert_eq!(tree.nodes[b].parent, Some(shortcut));
         assert_eq!(tree.nodes[a].children, []);
 
-        tree.reparent(&space, shortcut, 0, 1.0);
+        tree.reparent(shortcut, 0, 1.0, distance);
         assert!((tree.cost(b) - 1.5).abs() < 1e-12);
         assert!((tree.cost(c) - 2.5).abs() < 1e-12);
         assert_eq!(tree.path_to(c), [[0.0], [5.5], [6.0], [7.0]]);

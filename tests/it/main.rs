@@ -1,8 +1,12 @@
 //! Integration tests for the tree planners on a 2D world with obstacles.
 
+mod batch;
 mod informed;
 mod kinodynamic;
+mod objective;
 mod properties;
+mod retirement;
+mod riemannian;
 mod roadmaps;
 mod spaces;
 mod world;

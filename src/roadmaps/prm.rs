@@ -1,11 +1,11 @@
 //! PRM, PRM* and lazy PRM: multi-query probabilistic roadmaps.
 
-use alloc::vec::Vec;
+use alloc::{collections::BTreeMap, vec::Vec};
 
 use rand_core::Rng;
 
 use super::Error;
-use crate::graph::{Arc, Route, shortest_path};
+use crate::graph::{Arc, Dijkstra, Route};
 use crate::radius::{
     dimension_f64, k_constant_lower_bound, k_nearest_count, shrinking_radius, unit_ball_volume,
 };
@@ -212,6 +212,23 @@ pub struct Prm<Sp: StateSpace, Sa, C, N = LinearScan<<Sp as StateSpace>::State>>
     nn: N,
     /// Reused buffer for neighbor queries.
     near: Vec<usize>,
+    /// Reused buffers of [`Prm::query`].
+    workspace: QueryWorkspace,
+}
+
+/// The buffers of one roadmap query, reusable across queries.
+///
+/// [`Prm::query_with`] fills and reuses them, so an entity that plans repeatedly on a shared
+/// roadmap allocates only until the buffers have grown to the roadmap's size. Keep one per
+/// thread; `Prm::query_batch` (feature `parallel`) does.
+#[derive(Debug, Clone, Default)]
+pub struct QueryWorkspace {
+    /// The Dijkstra buffers.
+    dijkstra: Dijkstra,
+    /// Lazy-edge verdicts of the running query, by edge id.
+    verdicts: BTreeMap<usize, bool>,
+    /// Neighbor query results.
+    near: Vec<usize>,
 }
 
 impl<Sp, Sa, C> Prm<Sp, Sa, C>
@@ -271,6 +288,7 @@ where
             incident: Vec::new(),
             nn,
             near: Vec::new(),
+            workspace: QueryWorkspace::default(),
         })
     }
 
@@ -278,46 +296,89 @@ where
     /// neighbors. Returns the number of nodes added.
     pub fn grow<R: Rng + ?Sized>(&mut self, samples: usize, rng: &mut R) -> usize {
         let before = self.states.len();
+        // Drawing first and checking in one batch leaves the random stream unchanged, since
+        // sampling does not depend on the roadmap.
+        let drawn: Vec<Sp::State> = (0..samples).map(|_| self.sampler.sample(rng)).collect();
+        let mut validity = Vec::new();
+        self.checker.check_states(&drawn, &mut validity);
 
-        for _ in 0..samples {
-            let state = self.sampler.sample(rng);
+        // Neighbor sets do not depend on which edges are valid, so all edges of this call are
+        // checked in one batch after the nodes are in: the same roadmap, but one large batch
+        // for a batched or parallel checker.
+        let mut candidates = Vec::new();
+        for (state, result) in drawn.into_iter().zip(validity) {
+            if result.is_valid() {
+                self.add_node(state, &mut candidates);
+            }
+        }
 
-            if self.checker.check_state(&state).is_valid() {
-                self.add_node(state);
+        let valid = self.valid_edges(&candidates);
+        for (&(a, b), valid) in candidates.iter().zip(valid) {
+            if valid {
+                self.push_edge(a, b);
             }
         }
 
         self.states.len() - before
     }
 
-    /// Adds a valid state as a node and connects it to the nodes within the current radius.
-    fn add_node(&mut self, state: Sp::State) {
+    /// Adds a valid state as a node and appends its candidate edges, `(older node, new node)`
+    /// for the nodes within the current radius, to `candidates`.
+    fn add_node(&mut self, state: Sp::State, candidates: &mut Vec<(usize, usize)>) {
         let id = self.states.len();
         let mut near = core::mem::take(&mut self.near);
         self.neighbors(&state, self.neighborhood(id + 1), &mut near);
 
         self.states.push(state.clone());
         self.incident.push(Vec::new());
-
-        for &other in &near {
-            self.try_connect(other, id);
-        }
+        candidates.extend(near.iter().map(|&other| (other, id)));
 
         self.nn.insert(id, state);
         self.near = near;
     }
 
-    /// Adds the edge between the older node `a` and the newer node `b`, checked unless lazy.
-    fn try_connect(&mut self, a: usize, b: usize) {
+    /// Which of the `(older, newer)` node pairs to connect: those whose edge checks as valid
+    /// in one batch ([`ValidityChecker::check_motions`]), older to newer node and, if
+    /// configured, also newer to older; all of them, unchecked, in a lazy roadmap.
+    fn valid_edges(&self, pairs: &[(usize, usize)]) -> Vec<bool> {
+        if self.config.lazy {
+            return alloc::vec![true; pairs.len()];
+        }
+
+        let motion = |&(a, b): &(usize, usize)| (&self.states[a], &self.states[b]);
+        let forward: Vec<(&Sp::State, &Sp::State)> = pairs.iter().map(motion).collect();
+        let mut results = Vec::new();
+        self.checker
+            .check_motions(&self.space, &forward, &mut results);
+        let mut valid: Vec<bool> = results.iter().map(|result| result.is_valid()).collect();
+
+        if self.config.check_both_directions {
+            let pending: Vec<usize> = (0..pairs.len()).filter(|&i| valid[i]).collect();
+            let backward: Vec<(&Sp::State, &Sp::State)> = pending
+                .iter()
+                .map(|&i| motion(&(pairs[i].1, pairs[i].0)))
+                .collect();
+            self.checker
+                .check_motions(&self.space, &backward, &mut results);
+
+            for (&i, result) in pending.iter().zip(&results) {
+                valid[i] = result.is_valid();
+            }
+        }
+
+        valid
+    }
+
+    /// Adds the edge between the older node `a` and the newer node `b`: valid in an eager
+    /// roadmap, whose caller checked it, and unchecked in a lazy one.
+    fn push_edge(&mut self, a: usize, b: usize) {
         let status = if self.config.lazy {
             EdgeStatus::Unchecked
-        } else if self.is_edge_valid(a, b) {
-            EdgeStatus::Valid
         } else {
-            return;
+            EdgeStatus::Valid
         };
-
         let edge = self.edges.len();
+
         self.edges.push(Edge {
             a,
             b,
@@ -326,17 +387,6 @@ where
         });
         self.incident[a].push(edge);
         self.incident[b].push(edge);
-    }
-
-    /// Whether the roadmap edge between nodes `a` and `b` checks as valid, in both directions
-    /// if configured.
-    fn is_edge_valid(&self, a: usize, b: usize) -> bool {
-        let (sa, sb) = (&self.states[a], &self.states[b]);
-        let forward = self.checker.check_motion(&self.space, sa, sb).is_valid();
-
-        forward
-            && (!self.config.check_both_directions
-                || self.checker.check_motion(&self.space, sb, sa).is_valid())
     }
 
     /// The neighbor rule for a roadmap of `n` nodes.
@@ -401,14 +451,69 @@ where
             return Err(Error::InvalidStart(validity));
         }
 
-        let ends = self.connect_endpoints(start, goal);
-
-        loop {
-            let Some(route) = self.search(&ends, goal) else {
-                return Ok(None);
+        let mut workspace = core::mem::take(&mut self.workspace);
+        let ends = self.connect_endpoints(start, goal, &mut workspace.near);
+        let result = loop {
+            let Some(route) = self.search(&ends, goal, |_| false, &mut workspace.dijkstra) else {
+                break None;
             };
 
             if self.confirm_lazy_edges(&route) {
+                break Some(self.to_path(&route, start, goal));
+            }
+        };
+
+        self.workspace = workspace;
+        Ok(result)
+    }
+
+    /// The same as [`Prm::query`], through a shared reference, so that many queries can run on
+    /// one roadmap at once (see `Prm::query_batch`, feature `parallel`).
+    ///
+    /// A lazy roadmap checks the unchecked edges of each candidate path like [`Prm::query`],
+    /// but keeps the verdicts for this query only, so repeated shared queries check them
+    /// again; the result is the same.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidStart`] if `start` does not check as valid.
+    pub fn query_shared(
+        &self,
+        start: &Sp::State,
+        goal: &GoalRegion<Sp::State>,
+    ) -> Result<Option<Path<Sp::State>>, Error> {
+        self.query_with(&mut QueryWorkspace::default(), start, goal)
+    }
+
+    /// [`Prm::query_shared`] in the reusable buffers of `workspace`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidStart`] if `start` does not check as valid.
+    pub fn query_with(
+        &self,
+        workspace: &mut QueryWorkspace,
+        start: &Sp::State,
+        goal: &GoalRegion<Sp::State>,
+    ) -> Result<Option<Path<Sp::State>>, Error> {
+        let validity = self.checker.check_state(start);
+        if !validity.is_valid() {
+            return Err(Error::InvalidStart(validity));
+        }
+
+        let ends = self.connect_endpoints(start, goal, &mut workspace.near);
+        let QueryWorkspace {
+            dijkstra, verdicts, ..
+        } = workspace;
+        verdicts.clear();
+
+        loop {
+            let rejected = |id: usize| verdicts.get(&id) == Some(&false);
+            let Some(route) = self.search(&ends, goal, rejected, dijkstra) else {
+                return Ok(None);
+            };
+
+            if self.confirm_route_edges(&route, verdicts) {
                 return Ok(Some(self.to_path(&route, start, goal)));
             }
         }
@@ -420,13 +525,16 @@ where
     /// Both endpoints connect like a new node would. The direct start-to-center motion is
     /// tried when the center lies within the start's reach: inside the radius, or no farther
     /// than the start's `k`-th nearest node.
-    fn connect_endpoints(&self, start: &Sp::State, goal: &GoalRegion<Sp::State>) -> Endpoints {
+    fn connect_endpoints(
+        &self,
+        start: &Sp::State,
+        goal: &GoalRegion<Sp::State>,
+        near: &mut Vec<usize>,
+    ) -> Endpoints {
         let rule = self.neighborhood(self.states.len().max(1));
         let center = goal.center();
         let center_valid = self.checker.check_state(center).is_valid();
-        let mut near = Vec::new();
-
-        let reach = self.neighbors(start, rule, &mut near);
+        let reach = self.neighbors(start, rule, near);
         let from_start = near
             .iter()
             .filter(|&&node| self.is_motion_valid(start, &self.states[node]))
@@ -435,9 +543,9 @@ where
 
         let mut to_center = alloc::vec![f64::INFINITY; self.states.len()];
         if center_valid {
-            self.neighbors(center, rule, &mut near);
+            self.neighbors(center, rule, near);
 
-            for &node in &near {
+            for &node in near.iter() {
                 if self.is_motion_valid(&self.states[node], center) {
                     to_center[node] = self.space.distance(&self.states[node], center);
                 }
@@ -462,10 +570,17 @@ where
         self.checker.check_motion(&self.space, from, to).is_valid()
     }
 
-    /// Dijkstra from the start over the roadmap, skipping edges known to be invalid.
+    /// Dijkstra from the start over the roadmap, skipping edges known to be invalid and edges
+    /// whose id `rejected` holds for.
     ///
     /// Node ids: roadmap nodes `0..n`, the start `n`, the goal center `n + 1`.
-    fn search(&self, ends: &Endpoints, goal: &GoalRegion<Sp::State>) -> Option<Route> {
+    fn search(
+        &self,
+        ends: &Endpoints,
+        goal: &GoalRegion<Sp::State>,
+        rejected: impl Fn(usize) -> bool,
+        dijkstra: &mut Dijkstra,
+    ) -> Option<Route> {
         let n = self.states.len();
         let (start, center) = (n, n + 1);
 
@@ -490,7 +605,7 @@ where
                     edge: None,
                 }));
             } else if node < n {
-                self.roadmap_arcs(node, out);
+                self.roadmap_arcs(node, &rejected, out);
 
                 if ends.to_center[node].is_finite() {
                     out.push(Arc {
@@ -502,15 +617,16 @@ where
             }
         };
 
-        shortest_path(n + 2, start, is_goal, arcs)
+        dijkstra.run(n + 2, start, is_goal, arcs)
     }
 
-    /// Appends the arcs along the not-invalid roadmap edges of `node`.
-    fn roadmap_arcs(&self, node: usize, out: &mut Vec<Arc>) {
+    /// Appends the arcs along the roadmap edges of `node` that are neither invalid nor
+    /// `rejected` by the query.
+    fn roadmap_arcs(&self, node: usize, rejected: impl Fn(usize) -> bool, out: &mut Vec<Arc>) {
         for &id in &self.incident[node] {
             let edge = &self.edges[id];
 
-            if edge.status != EdgeStatus::Invalid {
+            if edge.status != EdgeStatus::Invalid && !rejected(id) {
                 let to = if edge.a == node { edge.b } else { edge.a };
                 out.push(Arc {
                     to,
@@ -531,22 +647,50 @@ where
                 continue;
             }
 
-            let (from, to) = (route.nodes[step], route.nodes[step + 1]);
-            let valid = self.is_motion_valid(&self.states[from], &self.states[to])
-                && (!self.config.check_both_directions
-                    || self.is_motion_valid(&self.states[to], &self.states[from]));
-
+            let valid = self.is_route_step_valid(route, step);
             self.edges[id].status = if valid {
                 EdgeStatus::Valid
             } else {
                 EdgeStatus::Invalid
             };
+
             if !valid {
                 return false;
             }
         }
 
         true
+    }
+
+    /// [`Prm::confirm_lazy_edges`] for a shared roadmap: the verdicts go into the query's own
+    /// `verdicts` by edge id instead of the roadmap.
+    fn confirm_route_edges(&self, route: &Route, verdicts: &mut BTreeMap<usize, bool>) -> bool {
+        for (step, edge) in route.edges.iter().enumerate() {
+            let Some(id) = *edge else { continue };
+
+            if self.edges[id].status != EdgeStatus::Unchecked || verdicts.contains_key(&id) {
+                continue;
+            }
+
+            let valid = self.is_route_step_valid(route, step);
+            verdicts.insert(id, valid);
+
+            if !valid {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// Whether the roadmap edge of `route` at `step` is valid in travel direction, and also
+    /// backward if configured.
+    fn is_route_step_valid(&self, route: &Route, step: usize) -> bool {
+        let (from, to) = (route.nodes[step], route.nodes[step + 1]);
+
+        self.is_motion_valid(&self.states[from], &self.states[to])
+            && (!self.config.check_both_directions
+                || self.is_motion_valid(&self.states[to], &self.states[from]))
     }
 
     /// Converts a route over query node ids into a path of states.
@@ -586,6 +730,55 @@ where
             .iter()
             .filter(|edge| edge.status != EdgeStatus::Invalid)
             .count()
+    }
+}
+
+#[cfg(feature = "parallel")]
+impl<Sp, Sa, C, N> Prm<Sp, Sa, C, N>
+where
+    Sp: StateSpace + Sync,
+    Sp::State: Send + Sync,
+    Sa: Sampler<Sp::State> + Sync,
+    C: ValidityChecker<Sp> + Sync,
+    N: NearestNeighbors<Sp> + Sync,
+{
+    /// Answers many `(start, goal)` queries on this roadmap on `threads` threads (feature
+    /// `parallel`), with the results in input order.
+    ///
+    /// Each result equals [`Prm::query_shared`] on the same query. The queries are split into
+    /// one contiguous chunk per thread, so many entities can plan on one shared roadmap at
+    /// once.
+    #[must_use]
+    pub fn query_batch(
+        &self,
+        queries: &[(Sp::State, GoalRegion<Sp::State>)],
+        threads: core::num::NonZeroUsize,
+    ) -> Vec<Result<Option<Path<Sp::State>>, Error>> {
+        let chunk = queries.len().div_ceil(threads.get()).max(1);
+
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = queries
+                .chunks(chunk)
+                .map(|part| {
+                    scope.spawn(move || {
+                        let mut workspace = QueryWorkspace::default();
+
+                        part.iter()
+                            .map(|(start, goal)| self.query_with(&mut workspace, start, goal))
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+
+            handles
+                .into_iter()
+                .flat_map(|handle| {
+                    handle
+                        .join()
+                        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+                })
+                .collect()
+        })
     }
 }
 
