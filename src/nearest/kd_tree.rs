@@ -373,7 +373,9 @@ impl<const N: usize> NearestNeighbors<Euclidean<N>> for KdTree<N> {
             let (near, far) = self.children(index, query);
             stack.extend(near);
 
-            if self.plane_gap(index, query) <= bound {
+            // A NaN coordinate on either side makes the gap NaN: unknown, so search the far side.
+            let gap = self.plane_gap(index, query);
+            if gap.is_nan() || gap <= bound {
                 stack.extend(far);
             }
         }
@@ -467,6 +469,30 @@ mod tests {
         }
 
         (kd, linear)
+    }
+
+    #[test]
+    fn a_nan_split_coordinate_does_not_hide_its_far_side() {
+        let space = Euclidean::<1>;
+        let mut kd = KdTree::default();
+        let mut linear = LinearScan::default();
+
+        for (id, x) in [f64::NAN, f64::NAN, f64::NAN, 1.0, 2.0]
+            .into_iter()
+            .enumerate()
+        {
+            kd.insert(id, [x]);
+            NearestNeighbors::<Euclidean<1>>::insert(&mut linear, id, [x]);
+        }
+
+        // NaN sorts last, so the rebuilt root splits at a NaN with 1 and 2 on its left.
+        kd.rebalance();
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        kd.within_radius(&space, &[1.5], 1.0, &mut a);
+        linear.within_radius(&space, &[1.5], 1.0, &mut b);
+
+        assert_eq!(a, [3, 4]);
+        assert_eq!(a, b);
     }
 
     #[test]
