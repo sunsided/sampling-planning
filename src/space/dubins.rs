@@ -4,7 +4,7 @@ use core::f64::consts::TAU;
 
 use super::Se2State;
 use super::curve::{Segment, SegmentKind, total_length, walk};
-use crate::StateSpace;
+use crate::{StateSpace, angle_difference};
 
 /// Below this the normalized distance and heading difference count as zero (OMPL's
 /// `DUBINS_EPS`).
@@ -113,8 +113,9 @@ impl DubinsPath {
 ///
 /// **The distance is not symmetric**: `d(a, b)` is the length from `a` to `b`, which differs
 /// from the way back. Planners that measure from tree nodes toward targets (RRT, RRT*, RRT#,
-/// SST) are fine; see [`StateSpace::distance`] for the planners that need symmetry. It does
-/// satisfy the triangle inequality.
+/// SST) are fine; see [`StateSpace::distance`] for the planners that need symmetry. It
+/// satisfies the triangle inequality except within the coincidence tolerance: two poses
+/// within `1e-6` of a third can be a full loop apart.
 ///
 /// [`StraightLine`](crate::StraightLine) steering works as is: it interpolates the fraction
 /// `max_step / d` of the way, and a prefix of a shortest path is a shortest path, so the steered
@@ -168,7 +169,7 @@ impl Dubins {
     pub fn path(&self, from: &Se2State, to: &Se2State) -> DubinsPath {
         let (d, alpha, beta) = self.normalize(from, to);
 
-        if d < DUBINS_EPS && libm::fabs(alpha - beta) < DUBINS_EPS {
+        if d < DUBINS_EPS && libm::fabs(angle_difference(alpha, beta)) < DUBINS_EPS {
             return DubinsPath::new(DubinsWord::Lsl, [0.0, d, 0.0], self.radius);
         }
 
@@ -355,6 +356,19 @@ mod tests {
     use super::*;
     use crate::space::curve::tests::{assert_same_pose, pose_pairs};
     use core::f64::consts::{FRAC_PI_2, PI};
+
+    #[test]
+    fn coincident_headings_are_compared_across_the_seam() {
+        let space = Dubins::new(1.0);
+        let pose = |theta| Se2State {
+            x: 0.0,
+            y: 0.0,
+            theta,
+        };
+
+        assert!(space.distance(&pose(2e-7), &pose(-6e-7)).abs() < 1e-12);
+        assert!(space.distance(&pose(-6e-7), &pose(-4e-7)).abs() < 1e-12);
+    }
 
     /// The Dubins distance between two poses given as tuples.
     fn length(radius: f64, from: (f64, f64, f64), to: (f64, f64, f64)) -> f64 {

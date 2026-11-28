@@ -33,8 +33,9 @@ impl<Sp: StateSpace> NearestNeighbors<Sp> for LinearScan<Sp::State> {
         for (id, state) in &self.entries {
             let distance = space.distance(state, query);
 
-            // Strict comparison keeps the earliest node on ties and skips NaN distances.
-            if best.is_none_or(|(_, best_distance)| distance < best_distance) {
+            // Strict comparison keeps the earliest node on ties; NaN distances never win.
+            if !distance.is_nan() && best.is_none_or(|(_, best_distance)| distance < best_distance)
+            {
                 best = Some((*id, distance));
             }
         }
@@ -90,6 +91,26 @@ mod tests {
     use super::*;
     use crate::Euclidean;
     use alloc::vec;
+
+    #[test]
+    fn a_nan_distance_never_wins_nearest() {
+        use crate::{KdTree, VpTree};
+
+        let space = Euclidean::<1>;
+        let mut linear = LinearScan::default();
+        let mut kd = KdTree::default();
+        let mut vp = VpTree::default();
+
+        for (id, state) in [[f64::NAN], [1.0]].into_iter().enumerate() {
+            NearestNeighbors::<Euclidean<1>>::insert(&mut linear, id, state);
+            kd.insert(id, state);
+            NearestNeighbors::<Euclidean<1>>::insert(&mut vp, id, state);
+        }
+
+        assert_eq!(linear.nearest(&space, &[1.0]), Some(1));
+        assert_eq!(kd.nearest(&space, &[1.0]), Some(1));
+        assert_eq!(vp.nearest(&space, &[1.0]), Some(1));
+    }
 
     /// A structure holding the 1D points 0, 2, 4 and 2 again with ids 10 to 13.
     fn points() -> LinearScan<[f64; 1]> {

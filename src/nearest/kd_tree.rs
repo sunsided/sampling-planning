@@ -275,9 +275,10 @@ impl<const N: usize> KdTree<N> {
         reason = "exact ties must break like LinearScan, which compares the same values"
     )]
     fn improves(best: Option<(f64, usize)>, distance: f64, index: usize) -> bool {
-        best.is_none_or(|(best_distance, best_index)| {
-            distance < best_distance || (distance == best_distance && index < best_index)
-        })
+        !distance.is_nan()
+            && best.is_none_or(|(best_distance, best_index)| {
+                distance < best_distance || (distance == best_distance && index < best_index)
+            })
     }
 
     /// Whether removed nodes outnumber live ones by enough to make a rebuild pay off.

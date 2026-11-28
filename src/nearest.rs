@@ -20,7 +20,8 @@ pub trait NearestNeighbors<Sp: StateSpace> {
     /// Adds a node with the given id.
     fn insert(&mut self, id: usize, state: Sp::State);
 
-    /// The id of the node closest to `query`, or `None` if the structure is empty.
+    /// The id of the node closest to `query`, or `None` if the structure is empty or every
+    /// distance is NaN. Nodes at a NaN distance are never returned.
     fn nearest(&self, space: &Sp, query: &Sp::State) -> Option<usize>;
 
     /// Replaces the contents of `out` with the ids of all nodes within `radius` of `query`,
