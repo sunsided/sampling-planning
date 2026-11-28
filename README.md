@@ -65,8 +65,10 @@ sampling-planning = "0.1"
   (inflated and truncated BIT* searches), AIT* (BIT*-style forward search guided by a lazy LPA*
   reverse search that is repaired on every invalid edge) and EIT* (effort-guided forward search
   over a sparsely checked reverse search, which spends fewer collision checks than AIT*). AIT*
-  and EIT* trade CPU time in their reverse searches for collision checks, which pays off when
-  checks are expensive.
+  and EIT* size their batch graphs by the informed set, as OMPL does, and spend collision
+  checks on edges that improve the path: in the `arm_reach` example they shorten the path
+  within 10 000 checks, where BIT* is still at its first solution. Their reverse searches cost
+  CPU time per batch, which pays off when checks are expensive.
 - Batch planners: FMT* (fast marching tree) and BFMT* (bidirectional, optimal or first-meeting
   termination).
 - Kinodynamic planners: SST and SST* over a `Propagator` (forward simulation) trait, with

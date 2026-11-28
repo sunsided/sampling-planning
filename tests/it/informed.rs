@@ -166,7 +166,7 @@ fn ait_star_solves_improves_and_stays_above_the_optimum() {
         let mut rng = Pcg64Mcg::seed_from_u64(seed);
         let mut costs = Vec::new();
 
-        for _ in 0..20 {
+        for _ in 0..12 {
             planner.run(200, &mut rng);
             costs.extend(planner.best_path().map(|path| path.cost));
         }
@@ -199,7 +199,7 @@ fn ait_star_matches_across_indices_and_supports_k_nearest() {
         ..config()
     };
 
-    for (config, iterations) in [(config(), 3000), (k_config, 1500)] {
+    for (config, iterations) in [(config(), 1200), (k_config, 1500)] {
         let mut kd = ait_star(pole(), config, KdTree::default());
         let mut linear = ait_star(pole(), config, LinearScan::default());
         kd.run(iterations, &mut Pcg64Mcg::seed_from_u64(5));

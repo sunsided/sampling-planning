@@ -17,8 +17,13 @@ use crate::trees::INFORMED_ATTEMPTS;
 use crate::{GoalRegion, LinearScan, NearestNeighbors, Path, Sampler, StateSpace, ValidityChecker};
 
 /// Settings for [`AitStar`]: the same batch size, radius constant, k-nearest constant and
-/// edge cap as BIT*, with the same meaning, ranges and lower bounds
+/// edge cap as BIT*, with the same ranges and lower bounds
 /// ([`BitStarConfig::gamma_lower_bound`], [`BitStarConfig::k_constant_lower_bound`]).
+///
+/// AIT* computes the batch radius as OMPL does: `q` counts every stored state, the newest
+/// batch included, and `gamma` shrinks with the informed set's share of the sampled domain
+/// ([`Sampler::informed_fraction`]), so the batch graph stays sparse once a solution shrinks
+/// the informed set. Radius neighborhoods assume a symmetric distance.
 pub type AitStarConfig = BitStarConfig;
 
 /// What a stored state currently is.
@@ -170,7 +175,7 @@ impl<S> Node<S> {
 /// let goal = GoalRegion::new([9.0, 9.0], 0.5);
 /// let mut ait = AitStar::new(Euclidean::<2>, sampler, Free, [1.0, 1.0], goal, config)
 ///     .expect("valid");
-/// ait.run(50, &mut rand_pcg::Pcg64Mcg::seed_from_u64(1));
+/// ait.run(200, &mut rand_pcg::Pcg64Mcg::seed_from_u64(1));
 ///
 /// assert!(ait.best_path().expect("free space").cost < 11.0);
 /// ```
@@ -349,10 +354,11 @@ where
     /// A batch ends at the first popped edge whose estimate cannot beat the current solution.
     /// When the batch's graph holds no better path than the incumbent (or none at all), that
     /// is the first edge, so every step starts a new batch: it adds up to `batch_size` states
-    /// and runs one neighbor query per stored state, which is quadratic with the
-    /// [`LinearScan`] default of [`AitStar::new`]. Use a [`KdTree`](crate::KdTree) and budget
-    /// by [`AitStar::batch_count`] as well. In free space a near-optimal run can reach 100
-    /// batches in a few hundred steps.
+    /// and restarts the reverse search over all stored states, and the neighbor queries of
+    /// the states it expands are linear with the [`LinearScan`] default of [`AitStar::new`].
+    /// Use a [`KdTree`](crate::KdTree) or [`VpTree`](crate::VpTree) and budget by
+    /// [`AitStar::batch_count`] or collision checks rather than steps. In free space a
+    /// near-optimal run can reach 100 batches in a few hundred steps.
     pub fn step<R: Rng + ?Sized>(&mut self, rng: &mut R) -> bool {
         self.resort_if_stale();
 
@@ -385,8 +391,8 @@ where
             self.prune();
         }
 
-        let sampled = self.sample_batch(rng);
-        self.reindex(sampled);
+        self.sample_batch(rng);
+        self.reindex();
         self.build_graph();
         self.restart_reverse_search();
         self.expand(START);
@@ -444,11 +450,8 @@ where
         }
     }
 
-    /// Draws up to `batch_size` valid samples that can improve the solution and returns how
-    /// many were added.
-    fn sample_batch<R: Rng + ?Sized>(&mut self, rng: &mut R) -> usize {
-        let mut added = 0;
-
+    /// Draws up to `batch_size` valid samples that can improve the solution.
+    fn sample_batch<R: Rng + ?Sized>(&mut self, rng: &mut R) {
         for _ in 0..self.config.batch_size {
             let informed = Informed {
                 space: &self.space,
@@ -460,16 +463,13 @@ where
 
             if let Some(state) = informed.draw(&mut self.sampler, rng) {
                 self.push_node(state, Kind::Sample);
-                added += 1;
             }
         }
-
-        added
     }
 
     /// Rebuilds the index over all vertices and samples and fixes this batch's neighbor rule
-    /// from `q = |V| + |X_unconn| - m`, as BIT* does.
-    fn reindex(&mut self, sampled: usize) {
+    /// from `q = |V| + |X_unconn|`, the new batch included, and the informed set's measure.
+    fn reindex(&mut self) {
         self.nn = self.prototype.clone();
         let mut live: usize = 0;
 
@@ -480,8 +480,16 @@ where
             }
         }
 
-        let q = live.saturating_sub(sampled).max(2);
-        self.neighborhood = Neighborhood::for_batch(&self.config, q, self.space.dimension());
+        // As OMPL: every informed state counts, the new batch included, and the radius
+        // shrinks with the informed set's measure.
+        let q = live.max(2);
+        let bound = self.best_cost + self.goal.tolerance();
+        let fraction = self
+            .sampler
+            .informed_fraction(&self.space, &self.start, self.goal.center(), bound)
+            .unwrap_or(1.0);
+        self.neighborhood =
+            Neighborhood::for_batch(&self.config, q, self.space.dimension(), fraction);
     }
 
     /// Fixes this batch's graph: every state's RGG neighbors, symmetrized, plus the forward

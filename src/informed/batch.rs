@@ -20,15 +20,30 @@ pub(super) enum Neighborhood {
 }
 
 impl Neighborhood {
-    /// The rule for a batch whose graph holds `q` states before the newest samples (eqs. 1
-    /// and 2 of Gammell et al. 2020): `min(gamma (ln q / q)^(1/d), max_radius)`, or the
+    /// The rule for a batch whose graph is counted as `q` states (eqs. 1 and 2 of Gammell et
+    /// al. 2020): `min(gamma fraction^(1/d) (ln q / q)^(1/d), max_radius)`, or the
     /// `ceil(k_constant ln q)` nearest.
-    pub(super) fn for_batch(config: &BitStarConfig, q: usize, dimension: usize) -> Self {
+    ///
+    /// `measure_fraction` in `(0, 1]` is the informed set's share of the sampled domain
+    /// ([`Sampler::informed_fraction`]): `gamma` holds the
+    /// domain's measure to the power `1/d`, so this replaces it with the informed measure, as
+    /// OMPL's AIT* and EIT* do. `1.0` keeps the whole domain's radius.
+    pub(super) fn for_batch(
+        config: &BitStarConfig,
+        q: usize,
+        dimension: usize,
+        measure_fraction: f64,
+    ) -> Self {
+        let d = dimension_f64(dimension);
+        let gamma = if measure_fraction < 1.0 {
+            config.gamma * libm::pow(measure_fraction, 1.0 / d)
+        } else {
+            config.gamma
+        };
+
         match config.k_nearest {
             Some(k_constant) => Self::Nearest(k_nearest_count(k_constant, q)),
-            None => Self::Radius(
-                shrinking_radius(config.gamma, q, dimension_f64(dimension)).min(config.max_radius),
-            ),
+            None => Self::Radius(shrinking_radius(gamma, q, d).min(config.max_radius)),
         }
     }
 
@@ -100,5 +115,36 @@ impl<Sp: StateSpace, C: ValidityChecker<Sp>> Informed<'_, Sp, C> {
             (self.space.distance(state, self.goal.center()) - self.goal.tolerance()).max(0.0);
 
         g_hat + h_hat < self.best_cost && self.checker.check_state(state).is_valid()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_informed_fraction_shrinks_the_radius_by_its_dth_root() {
+        let config = BitStarConfig::new(4.0);
+        let radius = |fraction| match Neighborhood::for_batch(&config, 500, 2, fraction) {
+            Neighborhood::Radius(radius) => radius,
+            Neighborhood::Nearest(_) => unreachable!("radius config"),
+        };
+
+        assert_eq!(
+            radius(1.0).to_bits(),
+            radius(2.0).to_bits(),
+            "capped at the domain"
+        );
+        assert!((radius(0.25) - 0.5 * radius(1.0)).abs() < 1e-12);
+
+        let k = BitStarConfig {
+            k_nearest: Some(3.0),
+            ..config
+        };
+        assert_eq!(
+            Neighborhood::for_batch(&k, 500, 2, 0.25),
+            Neighborhood::for_batch(&k, 500, 2, 1.0),
+            "the k rule ignores the measure"
+        );
     }
 }

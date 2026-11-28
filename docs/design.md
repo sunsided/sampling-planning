@@ -453,8 +453,16 @@ start and goal directly, since it needs no steering.
 - The radius is `min(gamma (ln q / q)^(1/d), max_radius)` with
   `q = |V| + |X_unconn| - m`, or `ceil(k ln q)` nearest; the bounds are the
   paper's eqs. 1 and 2. The paper takes the smaller of the free and the
-  informed volume in eq. 1; the crate keeps the user's `gamma` (free volume),
-  which is admissible but uses larger neighborhoods.
+  informed volume in eq. 1; BIT* and ABIT* keep the user's `gamma` (free
+  volume), which is admissible but uses larger neighborhoods. AIT* and EIT*
+  follow OMPL instead: `q = |V| + |X_unconn|` with the new batch, and `gamma`
+  scaled by `fraction^(1/d)`, where `Sampler::informed_fraction` gives the
+  informed set's share of the sampled domain (`UniformBox`: the
+  hyperspheroid's volume over the box's, at most one; `None` keeps the whole
+  domain). In `arm_reach` this took AIT* from a path cost of 2.151 to 1.941
+  rad within 10k collision checks, where the old rule's dense batch graphs
+  never improved on the first batch; at equal wall time (300 ms) AIT*
+  matched BIT*'s cost with 12k instead of 486k checks.
 - Batches come from `Sampler::sample_informed`, falling back to rejection,
   and keep only valid states with `f_hat < c_best`.
 - A rewiring lowers the costs of a subtree and makes queue keys stale; both
@@ -527,10 +535,13 @@ cost-to-go incrementally.
   current graph and not admissible for denser future batches.
 - A batch ends at the first edge that cannot beat the incumbent. When the
   batch's graph holds no better path (or none), that is the first edge, so
-  every step starts a batch: up to `batch_size` new states plus one
-  neighbor query per stored state for the graph snapshot (quadratic with
-  `LinearScan`). In free space a run measured 134 batches and 10.5k samples
-  in 500 steps; budget AIT* by batches, not steps, and use `KdTree`.
+  every step starts a batch with up to `batch_size` new states. Neighbor
+  lists are built lazily, on a state's first expansion in the batch (as
+  OMPL); a radius query from `x` finds exactly the states whose query finds
+  `x`, so this equals the symmetrized eager graph, which the `k`-nearest rule
+  still builds. Each batch still restarts the reverse search over every
+  state, so CPU time per batch grows with the stored states; budget AIT* by
+  batches or collision checks, not steps, and use `KdTree` or `VpTree`.
 
 `EitStar` follows OMPL's `EITstar` (Strub; Strub and Gammell 2022, IJRR
 41(4), arXiv 2111.01877) without multi-query planning. It shares BIT*'s

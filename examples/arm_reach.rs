@@ -11,10 +11,13 @@
 //! For real arms the collision check (meshes, many links) dominates planning time, so every
 //! planner gets the same budget of collision checks. All four search batches of informed
 //! samples. ABIT* inflates its heuristic to find a first solution with few checks. AIT* and
-//! EIT* add a reverse search that guides the forward search; EIT* checks edges sparsely in
-//! that search and estimates the checking effort, which typically buys it the cheapest path
-//! for the budget. The reverse searches cost CPU time of their own, as the `ms` column
-//! shows: they pay off when one collision check costs far more than this example's.
+//! EIT* add a reverse search that guides the forward search toward edges that are likely
+//! valid, so they spend the budget on edges that improve the path: within 10 000 checks
+//! they cut the joint-space path well below the first solution, while BIT* and ABIT* are
+//! still at theirs. EIT* also checks edges sparsely in that search and estimates the
+//! checking effort, which buys it a first solution with the fewest checks. The reverse
+//! searches cost CPU time of their own, as the `ms` column shows: they pay off when one
+//! collision check costs more than this example's microseconds.
 //!
 //! Run with `cargo run --release --example arm_reach [seed]`.
 
@@ -26,7 +29,7 @@ use std::time::Instant;
 use rand_core::SeedableRng;
 use rand_pcg::Pcg64Mcg;
 use sampling_planning::{
-    Euclidean, GoalRegion, Path, UniformBox, Validity, ValidityChecker, discretized_motion,
+    Euclidean, GoalRegion, KdTree, Path, UniformBox, Validity, ValidityChecker, discretized_motion,
     informed::{AbitStar, AbitStarConfig, AitStar, BitStar, BitStarConfig, EitStar, EitStarConfig},
 };
 
@@ -46,7 +49,7 @@ const GRASP: [f64; 2] = [1.1, 0.35];
 const RESOLUTION: f64 = 0.02;
 
 /// The collision checks each planner may spend in total.
-const CHECK_BUDGET: usize = 100_000;
+const CHECK_BUDGET: usize = 10_000;
 
 /// Collision checks of the arm against the table and [`OBSTACLES`], counting every state it
 /// evaluates.
@@ -146,7 +149,7 @@ trait Planner {
 /// Implements [`Planner`] for each planner type by forwarding to its inherent methods.
 macro_rules! planner {
     ($($ty:ident),*) => {$(
-        impl Planner for $ty<Euclidean<2>, UniformBox<2>, Arm> {
+        impl Planner for $ty<Euclidean<2>, UniformBox<2>, Arm, KdTree<2>> {
             fn step(&mut self, rng: &mut Pcg64Mcg) {
                 $ty::step(self, rng);
             }
@@ -215,16 +218,27 @@ fn plan_all(start: [f64; 2], goal: [f64; 2], seed: u64) -> [Outcome; 4] {
     let eit = EitStarConfig::from_bit_star(bit, RESOLUTION);
     let abit = AbitStarConfig::from_bit_star(bit);
 
-    let batch = BitStar::new(space, sampler, arm.clone(), start, target.clone(), bit);
-    let advanced = AbitStar::new(space, sampler, arm.clone(), start, target.clone(), abit);
-    let adaptive = AitStar::new(space, sampler, arm.clone(), start, target.clone(), bit);
-    let effort = EitStar::new(space, sampler, arm.clone(), start, target, eit);
+    // Each planner over a k-d tree, which indexes the 2D joint space.
+    macro_rules! make {
+        ($ty:ident, $config:expr) => {
+            $ty::with_nearest_neighbors(
+                space,
+                sampler,
+                arm.clone(),
+                start,
+                target.clone(),
+                $config,
+                KdTree::default(),
+            )
+            .expect("valid problem")
+        };
+    }
 
     [
-        run("BIT*", &arm, batch.expect("valid"), seed),
-        run("ABIT*", &arm, advanced.expect("valid"), seed),
-        run("AIT*", &arm, adaptive.expect("valid"), seed),
-        run("EIT*", &arm, effort.expect("valid"), seed),
+        run("BIT*", &arm, make!(BitStar, bit), seed),
+        run("ABIT*", &arm, make!(AbitStar, abit), seed),
+        run("AIT*", &arm, make!(AitStar, bit), seed),
+        run("EIT*", &arm, make!(EitStar, eit), seed),
     ]
 }
 

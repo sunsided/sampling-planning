@@ -140,6 +140,34 @@ impl<const N: usize> Sampler<[f64; N]> for UniformBox<N> {
             .map(|_| set.sample(rng))
             .find(|state| self.contains(state))
     }
+
+    /// The [`ProlateHyperspheroid`]'s volume over the box volume, at most one: an upper bound
+    /// on the informed share of the box, since part of the set may lie outside it.
+    ///
+    /// With a [metric bound](UniformBox::with_metric_bound) the set is the bound's
+    /// hyperspheroid, which contains the space's own informed set. `None` when `space` is not
+    /// Euclidean and there is no metric bound, or the set has no interior.
+    fn informed_fraction<Sp>(
+        &self,
+        space: &Sp,
+        start: &[f64; N],
+        goal: &[f64; N],
+        max_cost: f64,
+    ) -> Option<f64>
+    where
+        Sp: StateSpace<State = [f64; N]>,
+    {
+        let volume = if let Some(bound) = &self.metric_bound {
+            ProlateHyperspheroid::new(bound.embed(start), bound.embed(goal), max_cost)?.volume()
+                / bound.volume_scale()
+        } else if space.is_euclidean() {
+            ProlateHyperspheroid::new(*start, *goal, max_cost)?.volume()
+        } else {
+            return None;
+        };
+
+        (volume > 0.0).then(|| (volume / self.volume()).min(1.0))
+    }
 }
 
 impl<const N: usize> UniformBox<N> {
@@ -179,6 +207,7 @@ pub const INFORMED_BOX_ATTEMPTS: usize = 64;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Euclidean;
     use rand_core::SeedableRng;
 
     #[test]
@@ -206,6 +235,20 @@ mod tests {
             assert!(sampler.contains(&state));
             assert!(space.distance(&start, &state) + space.distance(&state, &goal) <= 9.0 + 1e-9);
         }
+    }
+
+    #[test]
+    fn informed_fraction_is_the_ellipse_area_over_the_box_area() {
+        let sampler = UniformBox::new([0.0, 0.0], [10.0, 10.0]);
+        let (start, goal) = ([2.0, 5.0], [8.0, 5.0]);
+        let fraction = |cost| sampler.informed_fraction(&Euclidean::<2>, &start, &goal, cost);
+
+        // Foci 6 apart, transverse diameter 10: semi-axes 5 and 4, area 20 pi.
+        let expected = core::f64::consts::PI * 20.0 / 100.0;
+        assert!((fraction(10.0).expect("finite set") - expected).abs() < 1e-12);
+        assert_eq!(fraction(100.0), Some(1.0), "capped at the box");
+        assert_eq!(fraction(f64::INFINITY), None);
+        assert_eq!(fraction(5.0), None, "no path is that short");
     }
 
     #[test]

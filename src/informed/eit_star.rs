@@ -19,6 +19,10 @@ use crate::{GoalRegion, LinearScan, NearestNeighbors, Path, Sampler, StateSpace,
 use queue::ForwardQueue;
 
 /// Settings for [`EitStar`]: BIT*'s batch settings plus the effort model.
+///
+/// EIT* computes the batch radius as OMPL does: `q` counts every stored state, the newest
+/// batch included, and `gamma` shrinks with the informed set's share of the sampled domain
+/// ([`Sampler::informed_fraction`]). Radius neighborhoods assume a symmetric distance.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EitStarConfig {
     /// The batch size, neighbor rule and edge cap, as for [`BitStar`](super::BitStar).
@@ -445,8 +449,8 @@ where
             self.prune();
         }
 
-        let sampled = self.sample_batch(rng);
-        self.reindex(sampled);
+        self.sample_batch(rng);
+        self.reindex();
         self.build_graph();
         self.sparse_checks = self.config.initial_sparse_checks;
         self.clear_forward_queue();
@@ -506,11 +510,8 @@ where
         }
     }
 
-    /// Draws up to `batch_size` valid samples that can improve the solution and returns how
-    /// many were added.
-    fn sample_batch<R: Rng + ?Sized>(&mut self, rng: &mut R) -> usize {
-        let mut added = 0;
-
+    /// Draws up to `batch_size` valid samples that can improve the solution.
+    fn sample_batch<R: Rng + ?Sized>(&mut self, rng: &mut R) {
         for _ in 0..self.config.bit.batch_size {
             let informed = Informed {
                 space: &self.space,
@@ -522,15 +523,12 @@ where
 
             if let Some(state) = informed.draw(&mut self.sampler, rng) {
                 self.push_node(state, Kind::Sample);
-                added += 1;
             }
         }
-
-        added
     }
 
     /// Rebuilds the index over all live states and fixes this batch's neighbor rule.
-    fn reindex(&mut self, sampled: usize) {
+    fn reindex(&mut self) {
         self.nn = self.prototype.clone();
         let mut live: usize = 0;
 
@@ -541,8 +539,16 @@ where
             }
         }
 
-        let q = live.saturating_sub(sampled).max(2);
-        self.neighborhood = Neighborhood::for_batch(&self.config.bit, q, self.space.dimension());
+        // As OMPL: every informed state counts, the new batch included, and the radius
+        // shrinks with the informed set's measure.
+        let q = live.max(2);
+        let bound = self.best_cost + self.goal.tolerance();
+        let fraction = self
+            .sampler
+            .informed_fraction(&self.space, &self.start, self.goal.center(), bound)
+            .unwrap_or(1.0);
+        self.neighborhood =
+            Neighborhood::for_batch(&self.config.bit, q, self.space.dimension(), fraction);
     }
 
     /// Rebuilds the batch graph: symmetrized neighbors of every live state plus the forward
