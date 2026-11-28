@@ -220,7 +220,20 @@ removal is `O(log n)` amortized and memory tracks the live count. A rebuild
 keeps the relative insertion order, which is the tie-break rank; a re-inserted
 id counts as the newest node, as in `LinearScan`.
 
-Later: GNAT for general metrics.
+`VpTree<Sp>` covers every other metric space (SO(2), SE(2), SE(3),
+Reeds-Shepp): a vantage-point tree whose inner nodes split at the median
+distance to a vantage state and keep the distance range of each side, so a
+query skips a side when `max(lo - d, d - hi)` exceeds its bound (triangle
+inequality, padded by the same relative `1e-9`). It needs a symmetric metric
+(not `Dubins`). `insert` gets no space, so the tree owns a copy and builds
+with it: new states go to a scanned tail, folded in by a full rebuild once the
+tail is half the tree's size (`O(n log n)` distances, `O(log^2 n)` amortized
+per insertion); removal marks and rebuilds like the k-d tree. Removal takes
+the earliest live entry of an id, as `LinearScan` does. A proptest compares
+all three queries with `LinearScan` on random SE(3) inserts and removals.
+Measured over 10k states: SE(3) nearest 63 ms to 14 ms per 256 queries
+(4.5x; six dimensions limit the pruning), 3D Euclidean 3x faster than the
+linear scan but 5x slower than the k-d tree.
 
 ### `Steering`
 

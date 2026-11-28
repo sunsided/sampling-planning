@@ -24,7 +24,8 @@
 //! - a start state and a [`GoalRegion`].
 //!
 //! Planners keep their nodes in a [`NearestNeighbors`] structure, [`LinearScan`] by default;
-//! [`KdTree`] is much faster in low-dimensional Euclidean spaces and returns identical results.
+//! [`KdTree`] is much faster in low-dimensional Euclidean spaces and [`VpTree`] in other metric
+//! spaces such as [`Se3`], and both return identical results.
 //! Randomness always comes from a caller-provided [`rand_core::Rng`], so a seeded RNG makes a
 //! run fully reproducible. Float math goes through `libm`, so results are also identical across
 //! platforms.
@@ -123,7 +124,7 @@ pub mod trees;
 mod validity;
 
 pub use goal::GoalRegion;
-pub use nearest::{KdTree, LinearScan, NearestNeighbors, RemovableNeighbors};
+pub use nearest::{KdTree, LinearScan, NearestNeighbors, RemovableNeighbors, VpTree};
 pub use objective::{CostObjective, GaussianObstacle, PathLength, RiskDensity};
 #[cfg(feature = "parallel")]
 pub use parallel::ParallelChecker;

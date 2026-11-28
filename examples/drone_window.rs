@@ -6,10 +6,12 @@
 //! plans where to fly and how to turn on the way. The only way into the second room is a
 //! window in the wall between them.
 //!
+//! A k-d tree cannot index SE(3) poses, so the planner keeps its nodes in a [`VpTree`], which
+//! only needs the metric and returns exactly what a linear scan would.
+//!
 //! With `--features parallel` the example also grows one RRT* tree per thread with
-//! [`grow_forest`](sampling_planning::trees::grow_forest) and merges the trees. The trees
-//! grow in the time of one, so the merged tree holds several times the samples; the merge
-//! itself then takes most of the time, see `forest`.
+//! [`grow_forest`](sampling_planning::trees::grow_forest) and merges the trees, which buys
+//! several times the samples in little more than the time of one tree.
 //!
 //! Run with `cargo run --release --example drone_window [seed]`, or with
 //! `cargo run --release --features parallel --example drone_window [seed]`.
@@ -21,7 +23,7 @@ use rand_core::SeedableRng;
 use rand_pcg::Pcg64Mcg;
 use sampling_planning::{
     GoalRegion, Path, Problem, Se3, Se3State, StraightLine, UniformSe3, Validity, ValidityChecker,
-    discretized_motion,
+    VpTree, discretized_motion,
     trees::{RrtStar, RrtStarConfig},
 };
 
@@ -40,10 +42,6 @@ const DRONE_RADIUS: f64 = 0.3;
 
 /// RRT* iterations per tree.
 const ITERATIONS: usize = 3000;
-
-/// Trees in the forest of feature `parallel`, each on its own thread.
-#[cfg(feature = "parallel")]
-const FOREST: u64 = 4;
 
 /// The planning problem of this example.
 type Flight = Problem<Se3, UniformSe3, Rooms, StraightLine>;
@@ -108,7 +106,9 @@ fn main() {
         .unwrap_or(1);
 
     let started = Instant::now();
-    let mut planner = RrtStar::new(problem(), config()).expect("take-off pose is free");
+    let index = VpTree::new(problem().space);
+    let mut planner =
+        RrtStar::with_nearest_neighbors(problem(), config(), index).expect("take-off pose is free");
     planner.run(ITERATIONS, &mut Pcg64Mcg::seed_from_u64(seed));
     let millis = started.elapsed().as_secs_f64() * 1e3;
 
@@ -141,28 +141,22 @@ fn print_flight(path: &Path<Se3State>) {
     }
 }
 
-/// Grows [`FOREST`] trees on their own threads with [`ITERATIONS`] iterations each, merges
-/// them and compares the result with the single tree's `single_cost` (feature `parallel`).
-///
-/// The merge inserts every node of the other trees into the first one like an RRT* step, and
-/// with a [`LinearScan`] index each insertion scans the whole tree: merging many large trees
-/// costs far more than growing them. Keep the forest small, or use a [`KdTree`] where the
-/// space allows it (Euclidean spaces).
-///
-/// [`KdTree`]: sampling_planning::KdTree
+/// Grows one tree per available thread with [`ITERATIONS`] iterations each, merges them and
+/// compares the result with the single tree's `single_cost` (feature `parallel`).
 #[cfg(feature = "parallel")]
 fn forest(seed: u64, single_cost: f64) {
-    use sampling_planning::{LinearScan, PathLength, trees::grow_forest};
+    use sampling_planning::{PathLength, trees::grow_forest};
 
-    let mut rngs: Vec<Pcg64Mcg> = (0..FOREST)
-        .map(|i| Pcg64Mcg::seed_from_u64(seed + i))
+    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    let mut rngs: Vec<Pcg64Mcg> = (0..threads)
+        .map(|i| Pcg64Mcg::seed_from_u64(seed + u64::try_from(i).expect("few threads")))
         .collect();
 
     let started = Instant::now();
     let merged = grow_forest(
         &problem(),
         config(),
-        &LinearScan::default(),
+        &VpTree::new(problem().space),
         &PathLength,
         &mut rngs,
         ITERATIONS,
@@ -172,7 +166,7 @@ fn forest(seed: u64, single_cost: f64) {
     let cost = merged.best_path().map_or(f64::NAN, |path| path.cost);
 
     println!(
-        "forest of {FOREST} trees: {} nodes, cost {cost:.2} (single tree {single_cost:.2}), {millis:.0} ms",
+        "forest of {threads} trees: {} nodes, cost {cost:.2} (single tree {single_cost:.2}), {millis:.0} ms",
         merged.node_count()
     );
 }

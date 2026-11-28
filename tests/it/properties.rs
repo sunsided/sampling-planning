@@ -7,7 +7,8 @@ use core::f64::consts::{PI, TAU};
 
 use proptest::prelude::*;
 use sampling_planning::{
-    Dubins, ReedsShepp, Se2, Se2State, Se3, Se3State, So2, StateSpace, angle_difference, wrap_angle,
+    Dubins, LinearScan, NearestNeighbors, ReedsShepp, RemovableNeighbors, Se2, Se2State, Se3,
+    Se3State, So2, StateSpace, VpTree, angle_difference, wrap_angle,
 };
 
 /// Any angle within a thousand turns; wrapping must stay exact enough there.
@@ -104,5 +105,42 @@ proptest! {
 
         prop_assert!(reversing >= straight - tolerance, "{reversing} < {straight}");
         prop_assert!(reversing <= forward + tolerance, "{reversing} > {forward}");
+    }
+
+    #[test]
+    fn vp_tree_answers_exactly_like_a_linear_scan(
+        states in prop::collection::vec(spatial_pose(), 1..300),
+        removals in prop::collection::vec(0..300_usize, 0..60),
+        queries in prop::collection::vec(spatial_pose(), 1..8),
+        radius in 0.0..60.0_f64,
+        k in 0..12_usize,
+        weight in 0.01..10.0_f64,
+    ) {
+        let space = Se3::new(weight);
+        let mut tree = VpTree::new(space);
+        let mut linear = LinearScan::default();
+
+        for (id, state) in states.iter().enumerate() {
+            // Every fourth id repeats an earlier one, so removal order matters.
+            let id = if id % 4 == 3 { id / 2 } else { id };
+            tree.insert(id, *state);
+            NearestNeighbors::<Se3>::insert(&mut linear, id, *state);
+        }
+
+        for id in removals {
+            prop_assert_eq!(tree.remove(id), RemovableNeighbors::<Se3>::remove(&mut linear, id));
+        }
+
+        prop_assert_eq!(tree.len(), NearestNeighbors::<Se3>::len(&linear));
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        for query in &queries {
+            prop_assert_eq!(tree.nearest(&space, query), linear.nearest(&space, query));
+            tree.within_radius(&space, query, radius, &mut a);
+            linear.within_radius(&space, query, radius, &mut b);
+            prop_assert_eq!(&a, &b);
+            tree.k_nearest(&space, query, k, &mut a);
+            linear.k_nearest(&space, query, k, &mut b);
+            prop_assert_eq!(&a, &b);
+        }
     }
 }
