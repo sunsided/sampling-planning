@@ -102,7 +102,9 @@ fn problem() -> Parking {
         space: ReedsShepp::new(TURNING_RADIUS),
         sampler: UniformSe2::new(STREET.0, STREET.1),
         checker: Footprint,
-        steering: StraightLine::new(3.0),
+        // Short steps: out of the gap only short drives stay clear of the parked cars, and a
+        // longer step would be rejected whole. With 3.0 a quarter of the seeds fail.
+        steering: StraightLine::new(0.75),
         start: Se2State::new(2.0, 4.0, 0.0),
         goal: GoalRegion::new(Se2State::new(7.2, 0.9, 0.0), 0.25),
     }

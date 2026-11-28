@@ -145,7 +145,7 @@ fn main() {
         .unwrap_or(1);
 
     println!(
-        "{:<20} {:>11} {:>9} {:>9}",
+        "{:<20} {:>11} {:>11} {:>9}",
         "planner", "iterations", "arrival", "ms"
     );
 
@@ -187,16 +187,17 @@ fn main() {
     }
 }
 
-/// Prints one result line: the arrival time of `trajectory` in seconds.
+/// Prints one result line: the arrival time of `trajectory` in seconds, or "no solution" when
+/// the run used up its `iterations` without reaching the goal.
 fn report(
     name: &str,
     iterations: usize,
     trajectory: Option<Trajectory<Se2State, [f64; 2]>>,
     started: Instant,
 ) {
-    let arrival = trajectory.map_or("-".to_owned(), |t| format!("{:.1} s", t.cost));
+    let arrival = trajectory.map_or("no solution".to_owned(), |t| format!("{:.1} s", t.cost));
     println!(
-        "{name:<20} {iterations:>11} {arrival:>9} {:>9.1}",
+        "{name:<20} {iterations:>11} {arrival:>11} {:>9.1}",
         started.elapsed().as_secs_f64() * 1e3
     );
 }
