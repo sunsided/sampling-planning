@@ -259,9 +259,10 @@ pub struct Prm<Sp: StateSpace, Sa, C, N = LinearScan<<Sp as StateSpace>::State>>
 
 /// The buffers of one roadmap query, reusable across queries.
 ///
-/// [`Prm::query_with`] fills and reuses them, so an entity that plans repeatedly on a shared
-/// roadmap allocates only until the buffers have grown to the roadmap's size. Keep one per
-/// thread; `Prm::query_batch` (feature `parallel`) does.
+/// [`Prm::query_with`] fills and reuses the Dijkstra and neighbor buffers, so an entity that
+/// plans repeatedly on a shared roadmap stops reallocating them once they have grown to the
+/// roadmap's size. Each query still allocates its endpoint connections and the returned path.
+/// Keep one per thread; `Prm::query_batch` (feature `parallel`) does.
 #[derive(Debug, Clone, Default)]
 pub struct QueryWorkspace {
     /// The Dijkstra buffers.
@@ -551,7 +552,8 @@ where
         goal: &GoalRegion<Sp::State>,
         near: &mut Vec<usize>,
     ) -> Endpoints {
-        let rule = self.neighborhood(self.states.len().max(1));
+        // The radius a node added now would get, as in `add_node`.
+        let rule = self.neighborhood(self.states.len() + 1);
         let center = goal.center();
         let center_valid = self.checker.check_state(center).is_valid();
         let reach = self.neighbors(start, rule, near);
@@ -660,8 +662,11 @@ where
         for (step, edge) in route.edges.iter().enumerate() {
             let Some(id) = *edge else { continue };
 
-            if self.edges[id].status() != EdgeStatus::Unchecked {
-                continue;
+            // Another query may have checked the edge since this route was searched.
+            match self.edges[id].status() {
+                EdgeStatus::Valid => continue,
+                EdgeStatus::Invalid => return false,
+                EdgeStatus::Unchecked => {}
             }
 
             let valid = self.is_route_step_valid(route, step);
@@ -858,6 +863,51 @@ mod tests {
                 Validity::Valid
             );
         }
+    }
+
+    #[test]
+    fn confirming_rejects_an_edge_another_query_found_invalid() {
+        let lazy = roadmap(true);
+        let goal = GoalRegion::new([9.0, 1.0], 0.3);
+        let mut workspace = QueryWorkspace::default();
+        // A first query confirms its route, so the second search finds the same, valid route.
+        lazy.query_with(&mut workspace, &[1.0, 1.0], &goal)
+            .expect("valid start")
+            .expect("connected");
+        let ends = lazy.connect_endpoints(&[1.0, 1.0], &goal, &mut workspace.near);
+        let route = lazy
+            .search(&ends, &goal, &mut workspace.dijkstra)
+            .expect("connected");
+        let edge = route
+            .edges
+            .iter()
+            .flatten()
+            .next()
+            .copied()
+            .expect("a roadmap edge");
+
+        // A concurrent query checks this edge between our search and our confirmation.
+        lazy.edges[edge].set_status(EdgeStatus::Invalid);
+
+        assert!(!lazy.confirm_lazy_edges(&route));
+    }
+
+    #[test]
+    fn a_query_on_a_one_node_roadmap_connects_like_a_second_node() {
+        // One node at (0.5, 9), above the wall; the radius for one node alone would be zero.
+        let mut prm = Prm::new(
+            Euclidean::<2>,
+            UniformBox::new([0.5, 9.0], [0.5, 9.0]),
+            Wall,
+            PrmConfig::star(10.0),
+        )
+        .expect("valid config");
+        prm.grow(1, &mut rand_pcg::Pcg64Mcg::seed_from_u64(1));
+
+        let path = prm
+            .query(&[0.0, 9.0], &GoalRegion::new([1.0, 9.0], 0.1))
+            .expect("valid start");
+        assert!(path.is_some());
     }
 
     /// A one-way gate at `x = 5`: motions may cross it only while `x` increases.
