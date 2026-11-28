@@ -95,6 +95,10 @@ impl<const N: usize> GaussianObstacle<N> {
     /// The scaled line integral of the obstacle's density along the straight segment from
     /// `from` to `to`, by arc length: `scale * integral_0^1 N(from + s (to - from)) |to - from| ds`
     /// in closed form (Paiola et al., eq. 26, in N dimensions).
+    ///
+    /// Infinite when the closed form cannot be evaluated (non-finite coordinates, or
+    /// coordinates so large that it overflows), so a planner never mistakes such a segment
+    /// for a safe one.
     #[must_use]
     pub fn segment_risk(&self, from: &[f64; N], to: &[f64; N]) -> f64 {
         let offset: [f64; N] = core::array::from_fn(|i| from[i] - self.mean[i]);
@@ -114,6 +118,11 @@ impl<const N: usize> GaussianObstacle<N> {
             * libm::sqrt(PI / (2.0 * c))
             * (libm::erf(root * (1.0 + b / c)) - libm::erf(root * (b / c)));
 
+        if integral.is_nan() {
+            return f64::INFINITY;
+        }
+
+        // Rounding can leave the difference of the error functions a hair below zero.
         self.factor * length * integral.max(0.0)
     }
 
@@ -275,6 +284,18 @@ mod tests {
 
         assert!((risk - 1.0 / libm::sqrt(2.0 * PI)).abs() < 1e-12);
         assert!(unit().segment_risk(&[1.0, 1.0], &[1.0, 1.0]).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn a_segment_the_closed_form_cannot_evaluate_is_infinitely_risky() {
+        assert_eq!(
+            unit().segment_risk(&[f64::NAN, 0.0], &[1.0, 0.0]),
+            f64::INFINITY
+        );
+        assert_eq!(
+            unit().segment_risk(&[-1.0, 0.0], &[f64::INFINITY, 0.0]),
+            f64::INFINITY
+        );
     }
 
     #[test]
