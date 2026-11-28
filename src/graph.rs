@@ -67,49 +67,93 @@ pub(crate) fn shortest_path<A>(
     node_count: usize,
     source: usize,
     is_goal: impl Fn(usize) -> bool,
-    mut arcs: A,
+    arcs: A,
 ) -> Option<Route>
 where
     A: FnMut(usize, &mut Vec<Arc>),
 {
-    let mut cost = alloc::vec![f64::INFINITY; node_count];
-    let mut parent: Vec<Option<(usize, Option<usize>)>> = alloc::vec![None; node_count];
-    let mut settled = alloc::vec![false; node_count];
-    let mut heap = BinaryHeap::new();
-    let mut out = Vec::new();
+    Dijkstra::default().run(node_count, source, is_goal, arcs)
+}
 
-    cost[source] = 0.0;
-    heap.push(Entry {
-        cost: 0.0,
-        node: source,
-    });
+/// The buffers of [`shortest_path`], kept between searches so that repeated queries do not
+/// allocate once the buffers have grown to the graph's size.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Dijkstra {
+    /// The tentative cost per node.
+    cost: Vec<f64>,
+    /// The parent node and the edge to it, per node.
+    parent: Vec<Option<(usize, Option<usize>)>>,
+    /// Whether each node is settled.
+    settled: Vec<bool>,
+    /// The open nodes.
+    heap: BinaryHeap<Entry>,
+    /// The arcs of the node being expanded.
+    out: Vec<Arc>,
+}
 
-    while let Some(Entry { cost: c, node }) = heap.pop() {
-        if settled[node] {
-            continue;
+impl Dijkstra {
+    /// [`shortest_path`] in these buffers.
+    pub(crate) fn run<A>(
+        &mut self,
+        node_count: usize,
+        source: usize,
+        is_goal: impl Fn(usize) -> bool,
+        mut arcs: A,
+    ) -> Option<Route>
+    where
+        A: FnMut(usize, &mut Vec<Arc>),
+    {
+        self.reset(node_count);
+        self.cost[source] = 0.0;
+        self.heap.push(Entry {
+            cost: 0.0,
+            node: source,
+        });
+
+        while let Some(Entry { cost: c, node }) = self.heap.pop() {
+            if self.settled[node] {
+                continue;
+            }
+
+            self.settled[node] = true;
+            if is_goal(node) {
+                return Some(trace(&self.parent, node, c));
+            }
+
+            arcs(node, &mut self.out);
+            self.relax(node, c);
         }
 
-        settled[node] = true;
-        if is_goal(node) {
-            return Some(trace(&parent, node, c));
-        }
+        None
+    }
 
-        arcs(node, &mut out);
-        for arc in &out {
+    /// Clears the buffers for a graph of `node_count` nodes.
+    fn reset(&mut self, node_count: usize) {
+        self.cost.clear();
+        self.cost.resize(node_count, f64::INFINITY);
+        self.parent.clear();
+        self.parent.resize(node_count, None);
+        self.settled.clear();
+        self.settled.resize(node_count, false);
+        self.heap.clear();
+    }
+
+    /// Lowers the cost of every target of the arcs in `out` that `node`, settled at cost `c`,
+    /// reaches more cheaply.
+    fn relax(&mut self, node: usize, c: f64) {
+        for arc in &self.out {
             let candidate = c + arc.cost;
 
-            if candidate < cost[arc.to] {
-                cost[arc.to] = candidate;
-                parent[arc.to] = Some((node, arc.edge));
-                heap.push(Entry {
+            if candidate < self.cost[arc.to] {
+                self.cost[arc.to] = candidate;
+                self.parent[arc.to] = Some((node, arc.edge));
+                self.heap.push(Entry {
                     cost: candidate,
                     node: arc.to,
                 });
             }
         }
     }
-
-    None
 }
 
 /// Follows `parent` links back from `goal` to the source.

@@ -9,7 +9,7 @@ for continuous configuration spaces. It is not a task planner. The name
 | Module | Planners |
 | --- | --- |
 | `trees` | RRT, RRT*, RRT*-k, Informed RRT*, RRT#, RRT-Connect |
-| `informed` | BIT*, AIT*; later ABIT*, EIT* |
+| `informed` | BIT*, ABIT*, AIT*, EIT* |
 | `roadmaps` | PRM, PRM*, k-nearest PRM*, lazy PRM, SPARS, SPARS2, FMT*, BFMT* |
 | `kinodynamic` | SST, SST*, KPIECE |
 
@@ -73,6 +73,15 @@ Shipped spaces:
   accident. Distance `|dp| + w |dtheta|` (a weighted sum of metrics, so a
   metric; OMPL defaults to `w = 0.5`), straight position and short-arc heading
   interpolation. Sampler `UniformSe2` (position box, all headings).
+- `Se3(rotation_weight)` over `Se3State { position: [f64; 3], rotation: [f64; 4] }`
+  (unit quaternion `[w, x, y, z]`). Distance `|dp| + w angle`, with `angle` the
+  full rotation angle in `[0, pi]` of the relative rotation (OMPL's `SO3` reports
+  half of it), computed as `4 atan2(|a - b|, |a + b|)` after aligning the
+  quaternion signs, which stays accurate near zero and near a half turn where
+  `acos` does not. Both quaternion signs give the same distance. Interpolation is
+  a straight line in position and slerp along the shorter arc, the geodesic, so
+  `d(from, interpolate(t)) = t d(from, to)`. Sampler `UniformSe3` (position box,
+  Shoemake's uniform quaternions, three draws).
 - `Dubins(radius)` and `ReedsShepp(radius)` over `Se2State`, ported from
   OMPL's `DubinsStateSpace` and `ReedsSheppStateSpace` (Mark Moll). Distance
   is the shortest path length, interpolation walks that path
@@ -89,7 +98,7 @@ Shipped spaces:
   path is a shortest path, so the steered state is `max_step` away. Tests
   check that `d(from, interpolate(t)) = t d(from, to)` for both.
 
-Still open: SE(3) and compound spaces.
+Still open: compound spaces.
 
 ### `Sampler`
 
@@ -102,7 +111,7 @@ pub trait Sampler<S> {
 `&mut self` lets deterministic low-discrepancy samplers (Halton) and informed
 samplers (ellipsoid around the best path) keep state. The RNG is passed in,
 never owned, so one seeded RNG drives a whole planning run. The crate ships
-`UniformBox<N>`, `UniformAngle` and `UniformSe2`.
+`UniformBox<N>`, `UniformAngle`, `UniformSe2` and `UniformSe3`.
 
 ### `ValidityChecker`
 
@@ -134,6 +143,45 @@ into state and motion traits is possible later if a consumer needs only one.
 
 Not done yet: a policy knob that accepts `Unknown`. Nobody needs it; add it
 on the planner config when someone does.
+
+Batched checks: `check_states(states, out)` and `check_motions(space,
+motions, out)` are provided methods that default to the single checks in order,
+so every existing checker keeps working. SIMD, GPU or batched collision
+libraries override them; results must equal the single checks. `Prm::grow`
+draws all samples first and checks them in one batch (the random stream is
+unchanged, since sampling does not depend on the roadmap), then inserts the
+valid ones and collects their candidate edges, and checks all edges of the call
+in one batch at the end (both directions as a second batch of the survivors
+when configured). Neighbor sets do not depend on which edges are valid, so the
+roadmap, including edge ids, is bit-identical to before.
+
+Feature `parallel` (implies `std`, which only links `std`; the convention of
+`heuristic-search` and `multiobjective-search`) adds `ParallelChecker<C>`: it
+splits a batch into one contiguous chunk per thread on `std::thread::scope` and
+concatenates in order, so planners see the wrapped checker's results. Batches
+below `min_batch` stay on the calling thread, since spawning costs
+microseconds. Each thread hands its chunk to the wrapped checker's own batch
+method, so a SIMD checker stays vectorized.
+
+Parallel construction is parallel PRM construction: with a `ParallelChecker`,
+`grow`'s one batch of edge checks spreads over all threads while sampling,
+neighbor queries and insertion stay sequential, which keeps the roadmap
+identical to a sequential run. `benches/parallel.rs` (PRM*, 500 samples, a
+fine-resolution checker) measured 116 ms sequential and 30 ms on 20 threads;
+contiguous chunks of unequal edge lengths limit the speedup.
+
+Parallel tree growth is a forest merged later (`trees::grow_forest`, feature
+`parallel`): an RRT iteration depends on the tree the previous one left, so
+threads do not share a tree. Each thread grows its own RRT* tree from the start
+with its own RNG; then the other trees' nodes, tree by tree and breadth-first
+(parents first; insertion order is not, after rewiring), are inserted into the
+first tree like new RRT* nodes: the cheapest valid candidate becomes the parent
+(checked in cost order), then the neighbors are rewired. The candidates are the
+node's neighbors plus its parent from its own tree, already merged and an edge
+that tree checked, so no node is lost with a deterministic checker. No locks,
+results independent of scheduling, and the merged best path costs at most as
+much as the first tree's, since RRT* costs only decrease. A test pins all four
+on the slalom.
 
 ### `NearestNeighbors`
 
@@ -242,6 +290,37 @@ admissible for a ball goal. Goal bias still applies.
   `false`, so a custom space over `[f64; N]` with another metric never gets
   Euclidean ellipsoids.
 
+Direct informed sampling under a configuration-dependent metric follows Kyaw
+and Kelly 2026 (arXiv 2606.02879, RA-L 11(12)):
+
+- `LoewnerBound<N>` stores the Cholesky factor `L` of a constant SPD
+  `G_lower = L L^T`. If `G_lower <= G(q)` in the Loewner order everywhere, every
+  path is at least `||L^T (b - a)||` long (their Theorem 2), so in coordinates
+  `x = L^T q` the informed set of the bound is a prolate hyperspheroid that
+  contains the true one.
+- `meet` is their Algorithm 1 (`S = L^-1 G L^-T`, clamp its eigenvalues at 1,
+  recompose, re-factor). Eigenvalues come from cyclic Jacobi rotations, which is
+  plenty for configuration-space sizes and needs no dependency. `from_metrics`
+  folds `meet` over evaluations. The bound is admissible only at the evaluated
+  configurations; the paper's search for the worst violator (multi-start
+  gradient descent, Algorithm 3 and Appendix A) is left to the caller, and the
+  docs say so. `is_below` checks a configuration.
+- `UniformBox::with_metric_bound(bound)` (a private `Option` field, so the
+  constructor and `Copy` stay) samples that hyperspheroid, maps back with
+  `L^-T`, and rejects samples outside the box **and outside the space's own
+  informed set**, so the `sample_informed` contract (in the set, uniform) holds
+  even where the bound is loose. It declines without drawing when the
+  preimage's volume (`PHS volume / det L`) reaches the box volume.
+- `Riemannian<N, F>` is the configuration-dependent space to exercise it: the
+  metric tensor is a user closure, distances are midpoint-rule arc lengths of the
+  straight motion over `segments` pieces (the paper's approximation). It is the
+  straight-motion length, not the geodesic, so the triangle inequality can fail
+  where `G` varies strongly; the docs spell out what that costs.
+- Tests: the bound from a grid that contains the metric's minimum lies below
+  `G` and bounds the distance on random pairs, and it is tighter than the scalar
+  `sqrt(lambda_min)` bound; bounded informed samples lie in the true set;
+  informed RRT* over the space solves and improves.
+
 RRT# (`RrtSharp`, Arslan and Tsiotras 2013) takes an `RrtStarConfig` and
 uses the same extension and neighbor rule, but links each new vertex both ways
 to its neighbors (RRG) and then replans instead of rewiring. Each vertex keeps
@@ -254,6 +333,39 @@ never occurs. Edges are checked lazily, in travel direction, and at most once:
 only when they would lower an `lmc`. A unit test compares the best cost after
 every batch of iterations with Dijkstra over all eagerly checked graph edges.
 The paper's secondary key `min(g, lmc)` is replaced by the vertex id.
+
+Vertex retirement (`with_retirement(failures)` on `Rrt`, `RrtStar` and
+`RrtConnect`, off by default) removes a vertex from the nearest-neighbor index
+when it is exhausted; the vertex stays in the tree. Two rules, as in the issue
+and the `mark_exhausted` reference (sunsided/pathplanning, an RRT on a road
+graph that retires a vertex once all its outgoing edges lead to explored
+nodes):
+
+- **Decidable, for finite steering.** `Steering::successors(space, from)`, a
+  provided method returning `None`, lists the states steering can produce from
+  a vertex (lattice moves, motion primitives, graph edges). After every
+  extension from a vertex, it is retired once every successor is in the tree.
+  Membership uses a second index of the same type over every tree state,
+  retired ones included (a clone of the empty-but-root index taken by
+  `with_retirement`, so the method needs `N: RemovableNeighbors + Clone`), and
+  a zero-radius query.
+- **A cap, for continuous steering.** After `failures` consecutive failed
+  extensions (an invalid motion, or a steered state at distance zero from the
+  vertex) it is retired too. This is a heuristic: retired vertices lose
+  probabilistic completeness, and in RRT* they stop being parent candidates
+  and rewiring targets because the near query uses the same index.
+
+The planner stores the index's `remove` as a function pointer, so the other
+methods keep their `NearestNeighbors` bound and the config structs stay
+unchanged. The roots are never retired, so `nearest` never sees an empty
+index; with retirement off nothing extra is computed. `benches/retirement.rs`
+runs RRT to the first solution over eight seeds on two maps. On a cluttered
+map without dead ends it gains nothing (about 1000 iterations either way) and
+costs time for the extra index. Out of a bug trap it needs 2600 instead of
+3070 iterations with a cap of 3, about 35 % less time with `LinearScan`, but
+more with `KdTree`, whose queries near many retired vertices search further for
+a live one. A test on a bounded lattice with walls shows the decidable rule
+retiring interior vertices with the cap out of reach.
 
 RRT-Connect roots a second tree at the goal center. Goal-tree edges are
 traveled toward the root, so they are checked in that direction
@@ -275,6 +387,15 @@ pairs. Edges are direct motions along `interpolate`.
   current rule and run Dijkstra (ties by `total_cmp`, then node id); the
   direct start-to-center motion is tried when the center is within the
   start's reach (the radius, or the distance of its `k`-th neighbor).
+- Many queries: `query` takes `&mut self` because a lazy roadmap caches
+  edge verdicts. `query_shared(&self)` gives the same answer through a shared
+  reference, keeping lazy verdicts per query, and `query_with(&self,
+  &mut QueryWorkspace, ...)` does so in reusable buffers (Dijkstra's arrays
+  and heap in `graph::Dijkstra`, the verdicts, the neighbor buffer), so an
+  entity that plans repeatedly stops allocating them. `query_batch` (feature
+  `parallel`) answers many queries on threads, one workspace per thread, in
+  input order, so many entities can plan on one roadmap, as `solve_batch` does
+  in `heuristic-search`.
 - Lazy PRM stores edges unchecked and checks the edges of each candidate
   path at query time. It returns the eager cost for the same samples.
 - Roadmap edges are traveled both ways but checked once, from the older to
@@ -321,6 +442,36 @@ start and goal directly, since it needs no steering.
   heaps are re-keyed before the next pop, as OMPL does.
 - Pruned states stay in the node arena (marked) until the planner is dropped.
 
+`AbitStar` (Strub and Gammell 2020, arXiv 2002.06589) is the BIT* core with
+OMPL's `ABITstar` settings, not a copy: `BitStar` carries an optional
+`Search` state and multiplies `h_hat` by the inflation factor in both queue
+keys and the solution estimate by the truncation factor in the batch-end
+test. For BIT* both factors are `1.0`, so the arithmetic is bit-identical to
+before (checked against a recorded fingerprint of seeded runs).
+
+- Each batch first gets a search inflated by `initial_inflation` (OMPL: `1e6`,
+  a greedy best-first search). It ends at the first popped edge with
+  `tau (g + c_hat + h_hat) >= c_best`, `tau = 1 + truncation_scaling / q`
+  (OMPL: 5), `q = |V| + |X_unconn|` after sampling.
+- With a solution, a final search on the same batch follows: the queues are
+  kept (OMPL also keeps its edge queue), the edge that ended the inflated
+  search goes back in (OMPL drops it), and both are re-keyed with inflation
+  `1 + inflation_scaling / q` (OMPL: 10). Without a solution, every batch gets
+  only the inflated search.
+- Cascading rewirings (on in OMPL's ABIT*): every expansion of a vertex queues
+  rewiring candidates, not only its first. OMPL additionally queues the
+  outgoing edges of vertices whose cost changed after their expansion; this
+  crate does not re-expand within a search.
+- Invalid edges are remembered (`BTreeSet` of directed id pairs) and never
+  checked twice; BIT* keeps no such set, since it never revisits an edge.
+- Factor validation panics instead of returning `Error`, so `Error` gains no
+  variant. `AbitStarConfig` wraps a `BitStarConfig` (`from_bit_star`).
+- Measured on the slalom: over five seeds ABIT* reaches its first solution in
+  fewer steps than BIT* (a test pins this); at equal motion-check counts (5k to
+  40k, two seeds read out) both have about the same cost, ABIT* slightly lower
+  on one. Per step ABIT* is
+  slower, because cascading pops many rewiring edges that need no check.
+
 `AitStar` follows Algorithms 2 to 6 of Strub and Gammell 2020 (arXiv
 2002.06599): BIT*'s batches, pruning, radius and informed sampling (shared
 code in `informed/batch.rs` and `informed/queues.rs`), but no vertex queue.
@@ -361,6 +512,49 @@ cost-to-go incrementally.
   neighbor query per stored state for the graph snapshot (quadratic with
   `LinearScan`). In free space a run measured 134 batches and 10.5k samples
   in 500 steps; budget AIT* by batches, not steps, and use `KdTree`.
+
+`EitStar` follows OMPL's `EITstar` (Strub; Strub and Gammell 2022, IJRR
+41(4), arXiv 2111.01877) without multi-query planning. It shares BIT*'s
+batches, pruning and radius (`batch.rs`) and AIT*'s symmetrized batch graph,
+but not AIT*'s LPA*: EIT*'s reverse search is a cost-ordered A* over edges from
+the goal states that is restarted, not repaired.
+
+- Effort: `ValidityChecker` does not count checks, so `EitStarConfig::resolution`
+  defines them: an edge of length `d` is `ceil(d / resolution)` checks. The
+  remaining effort of an edge is that minus the sparse checks already done, zero
+  once its motion checked as valid.
+- Reverse search: edge keys `(h(s) + c_hat + g_hat(t), h(s) + c_hat, effort)`.
+  An edge is accepted after a sparse check: `k` evenly spaced states tested with
+  `check_state` in bisection order (`initial_sparse_checks`, default 1). It sets
+  `h(t)` and `effort(t) = effort(s) + remaining checks`.
+- Forward queue: keys `bound = g + c_hat + h(x)` and `effort = remaining checks +
+  effort(x)`, kept in two ordered sets (by effort, by bound) and updated when
+  `g`, `h`, effort or the check state of an edge changes. It pops the
+  least-effort edge whose bound lies within `suboptimality` times the lowest
+  (default infinite: always least effort), else the lowest-bound edge (OMPL's
+  `getFrontIter`). An earlier version re-scanned the queue on every step,
+  including reverse steps; that was about 10 times slower in wall-clock time
+  than AIT*. OMPL caches the front edge instead.
+- An invalid forward edge that the reverse tree uses raises `k` to `2k + 1`
+  (the new points interleave the old ones, so earlier checks are reused) and
+  restarts the reverse search; a new batch resets `k`.
+- Interleaving: the reverse search continues unless the forward front edge's
+  target is closed with a bound below the reverse queue's, every queued forward
+  edge leads to a closed state, or (infinite suboptimality) the front edge's
+  target has been reached. The forward search runs while its lowest bound beats
+  the solution; otherwise a new batch starts.
+- Deviations: path length has one cost-to-go (OMPL's estimated and admissible
+  ones coincide), full checks are remembered per direction, and states found
+  invalid by a sparse check make the edge invalid both ways. Every reverse edge
+  is one `step`, as in OMPL's iterations, so budget by batches or time.
+- Debt: `prune`, `disconnect`, `sample_batch`, `reindex` and `build_graph`
+  (about 120 lines) are copies of AIT*'s, since the two node types differ.
+  A shared batch-graph type over a node trait would remove them.
+- Measured on the slalom, five seeds: a first solution after 97 thousand state
+  evaluations in total (sample checks, sparse checks and the states of every
+  discretized motion check), against 1.12 million for AIT*; counting motion
+  checks alone, 607 against 9786. Over wall-clock time EIT* is ahead in the
+  first 0.5 s and within about 0.2 % of AIT*'s cost after 2 s.
 
 ### Sparse roadmaps
 
@@ -448,12 +642,66 @@ expands one of the 30 motions closest to the goal. Like OMPL it expands from
 the end state of the chosen motion, not a random state along it as in the
 paper. Cell selection scans all cells (OMPL keeps two heaps).
 
+Multi-level KPIECE (`Kpiece::with_levels(problem, projection, config, levels,
+ratio)`) implements the multi-level discretization that Sucan and Kavraki
+describe for KPIECE (OMPL has only one level); the per-level rules below are
+this crate's reading of it, not checked against the paper's text. It is a constructor, not a config
+field, so `KpieceConfig` stays unchanged. Each level is a `Grid` (finest
+first); level `l` has cells `ratio^l` times the finest per axis (coordinates
+`floor(c / ratio^l)`, `div_euclid`), and a coarse cell lists its child cells
+where a finest cell lists motions. Selection descends: a cell among all
+coarsest cells, then among the children of the chosen one, down to a finest
+cell; each level applies the exterior rule with the exterior share of the
+candidates and ranks by importance within its own level. Selections, coverage
+and score factors apply to the whole chain of enclosing cells; a new coarse
+cell takes the score of the finest cell that created it. One level draws the
+same random numbers as before, which a test and a seeded fingerprint pin. The
+"interesting" rule uses the finest level only. Using the candidates' exterior
+share per level is this crate's choice, by analogy with KPIECE1's global share.
+
 ### Post-processing
 
 `shortcut` (greedy, deterministic, drops states) and `shortcut_random`
 (random cuts between points on the path) check motions in travel direction,
 never return a costlier path, and take a `max_edge` bound because shortcuts
 break the one-steering-step edge length.
+
+### Cost objectives
+
+Decision: a separate trait, `CostObjective<Sp>`, passed to the planner, not a
+field of `Problem` (public fields, so a new one would break every literal).
+Designed against Paiola, Grioli and Bicchi's risk-density RRT* (IJRR, arXiv
+2611.22654).
+
+- **Decomposition.** Their risk density is a line integral of the obstacle
+  density along the path (eq. 20), and the planning cost is its first-order
+  collision probability, a sum of per-edge integrals (eqs. 27 and 28). The
+  exact probability under their H2 hypothesis, `1 - exp(-integral)`, is
+  monotone in the same integral. So the objective is a per-edge
+  `motion_cost(space, from, to)`, summed, and RRT*'s choose-parent and rewiring
+  work unchanged. No whole-path functional is needed; one that is not a sum
+  over edges would need a different search, and is out of scope.
+- **Metric and cost stay separate.** `StateSpace::distance` keeps finding
+  neighbors (the paper also uses Euclidean balls) and shaping informed sets.
+  Informed sampling is admissible only when the cost is bounded below by the
+  metric, so the trait has `distance_weight()`, the largest `w` with
+  `cost >= w distance`. RRT* then samples the informed set with bound
+  `c / w + tolerance`; `w = 0` (the default) turns informed sampling off.
+  `PathLength` has `w = 1`, so its runs are bit-identical to before.
+- **First non-length objective: the hybrid.** `RiskDensity<N>` sums
+  `GaussianObstacle` line integrals in closed form (the paper's eq. 26 with
+  `erf`, generalized to N dimensions), each scaled (`2 r xi` gives their
+  severity-weighted collision probability in 2D), plus `lambda * distance`
+  (eq. 30). `w = lambda`. Tests check the closed form against quadrature,
+  additivity over split edges and the 2D marginal, and that risk-aware RRT*
+  takes a path with a quarter of the risk of the shortest one.
+- The cost is not a metric (a straight edge through high risk can cost more
+  than a detour), so RRT*'s optimality proof does not apply; the paper says the
+  same. Deterministic obstacles stay with the `ValidityChecker`.
+- Wired into `RrtStar` only (`with_objective`, a defaulted type parameter
+  `O = PathLength`, so existing types are unchanged). `Tree::reparent` takes
+  the edge cost as a closure. The other planners still price by distance;
+  extending BIT*, FMT* and PRM follows the same pattern.
 
 ## RNG strategy
 
@@ -515,6 +763,8 @@ Float math (`sqrt`, `ln`, `powf`) is not in `core`. Decision: always use
   20(5), 2001.
 - O. Arslan and P. Tsiotras. *Use of relaxation methods in sampling-based
   algorithms for optimal motion planning.* ICRA 2013. (RRT#.)
+- A. Paiola, G. Grioli and A. Bicchi. *Risk density RRT\*: Planning in the
+  space of probability.* IJRR, arXiv 2611.22654. (Cost objectives.)
 - S. Karaman and E. Frazzoli. *Sampling-based algorithms for optimal motion
   planning.* IJRR 30(7), 2011. (RRT*, PRM*, radius bounds.)
 - L. E. Kavraki, P. Švestka, J.-C. Latombe and M. H. Overmars. *Probabilistic
@@ -524,9 +774,15 @@ Float math (`sqrt`, `ln`, `powf`) is not in `core`. Decision: always use
   IJRR 34(7), 2015.
 - J. D. Gammell, T. D. Barfoot and S. S. Srinivasa. *Batch Informed Trees
   (BIT\*): Informed asymptotically optimal anytime search.* IJRR 39(5), 2020.
+- P. T. Kyaw and J. Kelly. *Direct informed sampling on Riemannian manifolds via
+  Loewner order lower bounds.* RA-L 11(12), 2026, arXiv 2606.02879.
+- M. P. Strub and J. D. Gammell. *Advanced BIT\* (ABIT\*): Sampling-based
+  planning with advanced graph-search techniques.* ICRA 2020, arXiv 2002.06589.
 - M. P. Strub and J. D. Gammell. *Adaptively Informed Trees (AIT\*): Fast
   asymptotically optimal path planning through adaptive heuristics.* ICRA
   2020, arXiv 2002.06599.
+- M. P. Strub and J. D. Gammell. *AIT\* and EIT\*: Asymmetric bidirectional
+  sampling-based path planning.* IJRR 41(4): 390-417, 2022, arXiv 2111.01877.
 - S. Koenig, M. Likhachev and D. Furcy. *Lifelong Planning A\*.* Artificial
   Intelligence 155(1-2), 2004. (LPA*, AIT*'s reverse search.)
 - J. D. Gammell, S. S. Srinivasa and T. D. Barfoot. *Informed RRT\*.* IROS
@@ -546,9 +802,7 @@ Float math (`sqrt`, `ln`, `powf`) is not in `core`. Decision: always use
 
 ## Not yet implemented
 
-- The batch-informed planners ABIT* and EIT*.
-- Multi-level KPIECE.
-- The SE(3) and compound state spaces.
+- Compound state spaces.
 
 ## Cross-crate needs
 
@@ -565,8 +819,6 @@ Float math (`sqrt`, `ln`, `powf`) is not in `core`. Decision: always use
 
 - Should `Validity` live in a shared crate so `polyzonotope-reach` can return
   it directly? Today `robust-planning` would map its own result to it.
-- Cost objectives other than path length: separate trait, or a cost function
-  on `Problem`?
 - `f64` only, or generic over the scalar (`f32` for embedded targets)?
 - PRM checks roadmap edges in one direction by default. Should directional
   checking be the default instead (correct for reachable sets, twice the

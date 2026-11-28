@@ -1,5 +1,7 @@
 //! Steering: how a planner extends a node toward a sample.
 
+use alloc::vec::Vec;
+
 use crate::StateSpace;
 
 /// Extends a state toward a target state.
@@ -9,6 +11,21 @@ pub trait Steering<Sp: StateSpace> {
     /// May stop short of `toward`; the result must be connectable from `from` by
     /// [`StateSpace::interpolate`], since that segment is what gets validity-checked.
     fn steer(&self, space: &Sp, from: &Sp::State, toward: &Sp::State) -> Sp::State;
+
+    /// Every state [`Steering::steer`] can return from `from`, when there are finitely many
+    /// (a fixed set of motion primitives, lattice moves, the edges of a road graph); `None`
+    /// when steering is continuous.
+    ///
+    /// Tree planners with [vertex retirement](crate::trees#vertex-retirement) use it to retire
+    /// a vertex as soon as all its successors are in the tree, when steering from it can
+    /// produce no new state. Successors known to be invalid (outside a bounded lattice) may be
+    /// left out; any other unreachable one keeps the vertex from ever counting as exhausted.
+    /// The default is `None`.
+    fn successors(&self, space: &Sp, from: &Sp::State) -> Option<Vec<Sp::State>> {
+        let _ = (space, from);
+
+        None
+    }
 }
 
 /// Moves along the geodesic toward the target, at most `max_step` far.

@@ -1,16 +1,23 @@
 //! Uniform sampling in an axis-aligned box.
 
-use super::{ProlateHyperspheroid, Sampler, unit_f64};
+use super::{LoewnerBound, ProlateHyperspheroid, Sampler, unit_f64};
 use crate::StateSpace;
 use rand_core::Rng;
 
 /// Samples uniformly from the axis-aligned box `[lower, upper)` in R^N.
+///
+/// Informed planners get direct informed samples in Euclidean spaces, and in any space over
+/// `[f64; N]` whose metric is bounded below by a [`LoewnerBound`] given to
+/// [`UniformBox::with_metric_bound`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct UniformBox<const N: usize> {
     /// Inclusive lower corner.
     lower: [f64; N],
     /// Exclusive upper corner; at least `lower` on every axis.
     upper: [f64; N],
+    /// A constant lower bound of the space's metric tensor, for direct informed sampling in
+    /// non-Euclidean spaces; `None` samples informed sets only in Euclidean spaces.
+    metric_bound: Option<LoewnerBound<N>>,
 }
 
 impl<const N: usize> UniformBox<N> {
@@ -29,7 +36,33 @@ impl<const N: usize> UniformBox<N> {
             assert!(lo <= hi, "box lower bound exceeds upper bound");
         }
 
-        Self { lower, upper }
+        Self {
+            lower,
+            upper,
+            metric_bound: None,
+        }
+    }
+
+    /// Samples informed sets directly under a configuration-dependent metric bounded below by
+    /// `bound` (Kyaw and Kelly 2026): in the coordinates `L^T q` the bound's informed set is a
+    /// [`ProlateHyperspheroid`], which contains the space's informed set.
+    ///
+    /// The space need not be [Euclidean](StateSpace::is_euclidean), but its distance must be
+    /// at least [`LoewnerBound::distance`] for every pair of states the planner compares,
+    /// which holds when the bound lies below the metric tensor everywhere in the box. Samples
+    /// outside the space's own informed set are rejected, so the result stays uniform over the
+    /// informed set even where the bound is loose; a bound that is not admissible only cuts
+    /// off part of the set.
+    #[must_use]
+    pub const fn with_metric_bound(mut self, bound: LoewnerBound<N>) -> Self {
+        self.metric_bound = Some(bound);
+        self
+    }
+
+    /// The metric bound set by [`UniformBox::with_metric_bound`], if any.
+    #[must_use]
+    pub const fn metric_bound(&self) -> Option<&LoewnerBound<N>> {
+        self.metric_bound.as_ref()
     }
 
     /// The inclusive lower corner.
@@ -69,11 +102,15 @@ impl<const N: usize> Sampler<[f64; N]> for UniformBox<N> {
     /// Samples the [`ProlateHyperspheroid`] with foci `start` and `goal` and transverse diameter
     /// `max_cost`, rejecting samples outside the box, which is uniform over the intersection.
     ///
+    /// With a [metric bound](UniformBox::with_metric_bound), samples the hyperspheroid of the
+    /// bound's distance in the coordinates `L^T q` instead, maps the samples back and also
+    /// rejects those outside the space's own informed set.
+    ///
     /// Returns `None` without drawing when `space` is not
-    /// [Euclidean](StateSpace::is_euclidean), the set is degenerate, or its volume is at least
-    /// the box volume (then rejection from the box accepts more often). Returns `None` after
-    /// [`INFORMED_BOX_ATTEMPTS`] samples outside the box, which happens when the set reaches
-    /// far out of the box.
+    /// [Euclidean](StateSpace::is_euclidean) and there is no metric bound, the set is
+    /// degenerate, or its volume is at least the box volume (then rejection from the box
+    /// accepts more often). Returns `None` after [`INFORMED_BOX_ATTEMPTS`] rejected samples,
+    /// which happens when the set reaches far out of the box.
     fn sample_informed<Sp, R>(
         &mut self,
         space: &Sp,
@@ -86,6 +123,10 @@ impl<const N: usize> Sampler<[f64; N]> for UniformBox<N> {
         Sp: StateSpace<State = [f64; N]>,
         R: Rng + ?Sized,
     {
+        if let Some(bound) = &self.metric_bound {
+            return self.sample_bounded(bound, space, rng, start, goal, max_cost);
+        }
+
         if !space.is_euclidean() {
             return None;
         }
@@ -98,6 +139,36 @@ impl<const N: usize> Sampler<[f64; N]> for UniformBox<N> {
         (0..INFORMED_BOX_ATTEMPTS)
             .map(|_| set.sample(rng))
             .find(|state| self.contains(state))
+    }
+}
+
+impl<const N: usize> UniformBox<N> {
+    /// Direct informed sampling under a metric bounded below by `bound`; see
+    /// [`UniformBox::with_metric_bound`].
+    fn sample_bounded<Sp, R>(
+        &self,
+        bound: &LoewnerBound<N>,
+        space: &Sp,
+        rng: &mut R,
+        start: &[f64; N],
+        goal: &[f64; N],
+        max_cost: f64,
+    ) -> Option<[f64; N]>
+    where
+        Sp: StateSpace<State = [f64; N]>,
+        R: Rng + ?Sized,
+    {
+        let set = ProlateHyperspheroid::new(bound.embed(start), bound.embed(goal), max_cost)?;
+        if set.volume() / bound.volume_scale() >= self.volume() {
+            return None;
+        }
+
+        (0..INFORMED_BOX_ATTEMPTS)
+            .map(|_| bound.unembed(&set.sample(rng)))
+            .find(|state| {
+                self.contains(state)
+                    && space.distance(start, state) + space.distance(state, goal) <= max_cost
+            })
     }
 }
 

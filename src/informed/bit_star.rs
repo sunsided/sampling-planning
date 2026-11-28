@@ -1,10 +1,14 @@
 //! BIT*: batch informed trees (Gammell, Barfoot and Srinivasa 2020).
 
-use alloc::{collections::BinaryHeap, vec::Vec};
+use alloc::{
+    collections::{BTreeSet, BinaryHeap},
+    vec::Vec,
+};
 
 use rand_core::Rng;
 
 use super::Error;
+use super::abit_star::{AbitStarConfig, Search};
 use super::batch::{Informed, Neighborhood};
 use super::queues::{EdgeEntry, VertexEntry};
 use crate::radius::k_constant_lower_bound;
@@ -225,6 +229,11 @@ pub struct BitStar<Sp: StateSpace, Sa, C, N = LinearScan<<Sp as StateSpace>::Sta
     batches: usize,
     /// Reused buffer for neighbor queries.
     near: Vec<usize>,
+    /// ABIT*'s inflation and truncation state; `None` for plain BIT*.
+    search: Option<Search>,
+    /// ABIT* only: edges `(from, to)` found invalid, so that the final search on a batch does
+    /// not check them again. Ids are stable because pruned states stay stored.
+    invalid: BTreeSet<(usize, usize)>,
 }
 
 impl<Sp, Sa, C> BitStar<Sp, Sa, C>
@@ -307,10 +316,19 @@ where
             neighborhood: Neighborhood::Radius(0.0),
             batches: 0,
             near: Vec::new(),
+            search: None,
+            invalid: BTreeSet::new(),
         };
         planner.plant_root(start);
 
         Ok(planner)
+    }
+
+    /// Turns this planner into ABIT* with the given factors; see [`AbitStarConfig`].
+    pub(super) fn advanced(mut self, config: &AbitStarConfig) -> Self {
+        self.search = Some(Search::new(config));
+
+        self
     }
 
     /// Stores the start as vertex `0` and the goal center as the first sample, if it is valid.
@@ -355,8 +373,9 @@ where
     /// the vertex queue is ahead, then processes the best edge. Returns whether the tree
     /// changed.
     pub fn step<R: Rng + ?Sized>(&mut self, rng: &mut R) -> bool {
-        if self.vertex_queue.is_empty() && self.edge_queue.is_empty() {
-            self.start_batch(rng);
+        let truncated = self.search.is_some_and(|search| search.is_truncated());
+        if truncated || (self.vertex_queue.is_empty() && self.edge_queue.is_empty()) {
+            self.start_search(rng);
         }
 
         self.resort_if_stale();
@@ -378,6 +397,39 @@ where
         for _ in 0..iterations {
             self.step(rng);
         }
+    }
+
+    /// Starts the next search: a new batch, or for ABIT* with a solution the final, less
+    /// inflated search on the current batch after its inflated one.
+    fn start_search<R: Rng + ?Sized>(&mut self, rng: &mut R) {
+        let has_solution = self.best_cost.is_finite();
+        let Some(mut search) = self.search else {
+            self.start_batch(rng);
+            return;
+        };
+
+        if search.wants_final_search(has_solution) {
+            // The queues survive the inflated search; re-keying them deflates the heuristic.
+            search.begin_final_search(self.live_states());
+            self.search = Some(search);
+            self.stale_keys = true;
+        } else {
+            self.vertex_queue.clear();
+            self.edge_queue.clear();
+            search.begin_batch();
+            self.search = Some(search);
+            self.start_batch(rng);
+            search.truncate_for(self.live_states());
+            self.search = Some(search);
+        }
+    }
+
+    /// The number of vertices and samples that are not pruned, `|V| + |X_unconn|`.
+    fn live_states(&self) -> usize {
+        self.nodes
+            .iter()
+            .filter(|node| node.kind != Kind::Pruned)
+            .count()
     }
 
     /// Prunes, samples a batch, re-indexes and queues every vertex (Algorithm 1, lines 7-12).
@@ -499,10 +551,11 @@ where
 
     /// Queues vertex `v` for expansion.
     fn queue_vertex(&mut self, v: usize) {
+        let inflation = self.inflation();
         let node = &mut self.nodes[v];
         node.queued = true;
         self.vertex_queue.push(VertexEntry {
-            key: node.g + node.h_hat,
+            key: node.g + inflation * node.h_hat,
             cost: node.g,
             vertex: v,
         });
@@ -574,9 +627,11 @@ where
         self.neighbors(v, &mut near);
 
         let unexpanded = self.nodes[v].unexpanded;
+        // ABIT* cascades rewirings: every expansion of a vertex may rewire, not just its first.
+        let rewires = unexpanded || self.search.is_some();
         for &x in &near {
             if self.is_sample_edge_candidate(v, x, unexpanded)
-                || self.is_rewire_candidate(v, x, unexpanded)
+                || self.is_rewire_candidate(v, x, rewires)
             {
                 self.queue_edge(v, x);
             }
@@ -599,13 +654,14 @@ where
             && self.nodes[v].g_hat + self.edge_estimate(v, x) + target.h_hat < self.best_cost
     }
 
-    /// Whether the edge from the never-expanded vertex `v` to vertex `w` is a rewiring
-    /// candidate: not a tree edge, and it could improve both `w` and the solution.
-    fn is_rewire_candidate(&self, v: usize, w: usize, unexpanded: bool) -> bool {
+    /// Whether the edge from vertex `v` to vertex `w` is a rewiring candidate: `v` may rewire
+    /// (it was never expanded, or ABIT* cascades rewirings), the edge is not a tree edge, and
+    /// it could improve both `w` and the solution.
+    fn is_rewire_candidate(&self, v: usize, w: usize, rewires: bool) -> bool {
         let target = &self.nodes[w];
         let through = self.nodes[v].g_hat + self.edge_estimate(v, w);
 
-        unexpanded
+        rewires
             && target.kind == Kind::Vertex
             && w != v
             && target.parent != Some(v)
@@ -635,7 +691,7 @@ where
         let through = g + self.edge_estimate(v, x);
 
         self.edge_queue.push(EdgeEntry {
-            key: [through + self.nodes[x].h_hat, through, g],
+            key: [through + self.inflation() * self.nodes[x].h_hat, through, g],
             from: v,
             to: x,
         });
@@ -654,13 +710,12 @@ where
         let g_v = self.nodes[v].g;
         let estimate = g_v + self.edge_estimate(v, x);
 
-        if estimate + self.nodes[x].h_hat >= self.best_cost {
-            self.vertex_queue.clear();
-            self.edge_queue.clear();
+        if self.truncation() * (estimate + self.nodes[x].h_hat) >= self.best_cost {
+            self.end_search(edge);
             return false;
         }
 
-        if estimate >= self.nodes[x].g || !self.is_motion_valid(v, x) {
+        if estimate >= self.nodes[x].g || !self.is_edge_valid(v, x) {
             return false;
         }
 
@@ -670,11 +725,52 @@ where
         true
     }
 
-    /// Whether the motion from node `from` to node `to` checks as valid.
-    fn is_motion_valid(&self, from: usize, to: usize) -> bool {
-        self.checker
+    /// Ends the current search at `edge`, the first that cannot improve the solution enough.
+    ///
+    /// BIT* clears both queues, which ends the batch. ABIT*'s inflated search keeps them, with
+    /// `edge` put back, for the final search on the same batch to continue from.
+    fn end_search(&mut self, edge: EdgeEntry) {
+        let search = self
+            .search
+            .as_mut()
+            .filter(|search| search.wants_final_search(true));
+
+        if let Some(search) = search {
+            search.truncate();
+            self.edge_queue.push(edge);
+        } else {
+            self.vertex_queue.clear();
+            self.edge_queue.clear();
+        }
+    }
+
+    /// Whether the motion from node `from` to node `to` checks as valid; ABIT* remembers
+    /// invalid edges and never checks them twice.
+    fn is_edge_valid(&mut self, from: usize, to: usize) -> bool {
+        if self.search.is_some() && self.invalid.contains(&(from, to)) {
+            return false;
+        }
+
+        let valid = self
+            .checker
             .check_motion(&self.space, &self.nodes[from].state, &self.nodes[to].state)
-            .is_valid()
+            .is_valid();
+
+        if !valid && self.search.is_some() {
+            self.invalid.insert((from, to));
+        }
+
+        valid
+    }
+
+    /// The heuristic inflation factor of the current search; `1` for BIT*.
+    pub(super) fn inflation(&self) -> f64 {
+        self.search.map_or(1.0, |search| search.inflation())
+    }
+
+    /// The truncation factor of the current search; `1` for BIT*.
+    pub(super) fn truncation(&self) -> f64 {
+        self.search.map_or(1.0, |search| search.truncation())
     }
 
     /// Makes `v` the parent of `x` with cost `g`: adds the sample `x` to the tree, or rewires

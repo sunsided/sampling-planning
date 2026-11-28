@@ -1,12 +1,14 @@
 //! RRT*: the asymptotically optimal RRT (Karaman and Frazzoli 2011).
 
 use alloc::vec::Vec;
+use core::num::NonZeroUsize;
 
 use rand_core::Rng;
 
 use super::{Error, growth::Growth, targets::draw_target};
 use crate::{
-    LinearScan, NearestNeighbors, Path, Problem, Sampler, StateSpace, Steering, ValidityChecker,
+    CostObjective, LinearScan, NearestNeighbors, Path, PathLength, Problem, RemovableNeighbors,
+    Sampler, StateSpace, Steering, ValidityChecker,
     radius::{
         dimension_f64, k_constant_lower_bound, k_nearest_count, shrinking_radius, unit_ball_volume,
     },
@@ -162,11 +164,20 @@ impl RrtStarConfig {
 /// Costs only ever decrease, so the cost of [`RrtStar::best_path`] never increases as
 /// iterations run, and it converges to the optimum as the number of iterations grows.
 #[derive(Clone)]
-pub struct RrtStar<Sp: StateSpace, Sa, C, St, N = LinearScan<<Sp as StateSpace>::State>> {
+pub struct RrtStar<
+    Sp: StateSpace,
+    Sa,
+    C,
+    St,
+    N = LinearScan<<Sp as StateSpace>::State>,
+    O = PathLength,
+> {
     /// The tree and problem.
     growth: Growth<Sp, Sa, C, St, N>,
     /// The validated settings.
     config: RrtStarConfig,
+    /// Prices motions; tree costs are sums of its motion costs.
+    objective: O,
     /// Reused buffer for neighbor queries, to avoid an allocation per iteration.
     near: Vec<usize>,
 }
@@ -214,32 +225,76 @@ where
         config: RrtStarConfig,
         nn: N,
     ) -> Result<Self, Error> {
+        Self::with_objective(problem, config, nn, PathLength)
+    }
+}
+
+impl<Sp, Sa, C, St, N, O> RrtStar<Sp, Sa, C, St, N, O>
+where
+    Sp: StateSpace,
+    Sa: Sampler<Sp::State>,
+    C: ValidityChecker<Sp>,
+    St: Steering<Sp>,
+    N: NearestNeighbors<Sp>,
+    O: CostObjective<Sp>,
+{
+    /// Creates a planner with the given empty nearest-neighbor index that minimizes
+    /// `objective` instead of path length.
+    ///
+    /// Neighbors are still found by [`StateSpace::distance`] and the connection radius; only
+    /// costs come from [`CostObjective::motion_cost`]. Informed sampling uses the informed set
+    /// with bound `c_best / w + tolerance`, `w` = [`CostObjective::distance_weight`], and is
+    /// off when `w` is zero. RRT*'s asymptotic optimality is proven for metric costs such as
+    /// path length, not for every objective.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`RrtStar::with_nearest_neighbors`].
+    pub fn with_objective(
+        problem: Problem<Sp, Sa, C, St>,
+        config: RrtStarConfig,
+        nn: N,
+        objective: O,
+    ) -> Result<Self, Error> {
         config.validate()?;
 
         Ok(Self {
             growth: Growth::new(problem, config.goal_bias, nn)?,
             config,
+            objective,
             near: Vec::new(),
         })
+    }
+
+    /// The objective's cost of reaching `to` from node `from` by a direct motion.
+    fn cost_via(&self, from: usize, to: &Sp::State) -> f64 {
+        let tree = &self.growth.tree;
+
+        tree.cost(from)
+            + self
+                .objective
+                .motion_cost(&self.growth.problem.space, tree.state(from), to)
     }
 
     /// Runs one iteration. Returns whether a node was added.
     pub fn step<R: Rng + ?Sized>(&mut self, rng: &mut R) -> bool {
         let target = self.draw_target(rng);
         let (nearest, new) = self.growth.propose_toward(&target);
-        if !self.growth.is_motion_valid(nearest, &new) {
-            return false;
+        let valid = self.growth.is_motion_valid(nearest, &new);
+
+        if valid {
+            let mut near = core::mem::take(&mut self.near);
+            self.neighbors(&new, &mut near);
+
+            let (parent, cost) = self.choose_parent(nearest, &new, &near);
+            let id = self.growth.add(new.clone(), parent, cost);
+            self.rewire(id, &near);
+            self.near = near;
         }
 
-        let mut near = core::mem::take(&mut self.near);
-        self.neighbors(&new, &mut near);
+        self.growth.record_extension(nearest, &new, valid);
 
-        let (parent, cost) = self.choose_parent(nearest, &new, &near);
-        let id = self.growth.add(new, parent, cost);
-        self.rewire(id, &near);
-
-        self.near = near;
-        true
+        valid
     }
 
     /// Draws the next growth target: a goal-biased sample, restricted to the informed set when
@@ -258,8 +313,10 @@ where
         }
 
         let best = self.growth.best_cost()?;
+        let weight = self.objective.distance_weight();
 
-        Some(best + self.growth.problem.goal.tolerance())
+        // A path of cost c through x has d(start, x) + d(x, goal) <= c / w.
+        (weight > 0.0).then(|| best / weight + self.growth.problem.goal.tolerance())
     }
 
     /// Replaces `near` with the candidate parents and rewiring targets of the new node at
@@ -277,15 +334,58 @@ where
         );
     }
 
+    #[cfg(feature = "parallel")]
+    /// Adds the nodes of `other`, a tree over the same problem, parents before children, each
+    /// like a new RRT* node: connected to the cheapest valid candidate among its neighbors and
+    /// its own parent from `other` (already merged, and an edge `other` checked), then
+    /// rewiring its neighbors. A node is dropped only if even that edge fails its check now.
+    /// Costs never increase, so the best path never gets worse.
+    pub(super) fn absorb(&mut self, other: &Self) {
+        let mut near = core::mem::take(&mut self.near);
+        let nodes = other.growth.tree.breadth_first();
+        // Merged id of each node of `other`; both roots are the start.
+        let mut merged: Vec<Option<usize>> = alloc::vec![None; nodes.len()];
+        merged[0] = Some(0);
+
+        for (id, state, parent) in nodes.into_iter().skip(1) {
+            self.neighbors(state, &mut near);
+            let own_parent = parent.and_then(|parent| merged[parent]);
+            near.extend(own_parent.filter(|parent| !near.contains(parent)));
+
+            if let Some((parent, cost)) = self.cheapest_valid_parent(state, &near) {
+                let new = self.growth.add(state.clone(), parent, cost);
+                merged[id] = Some(new);
+                self.rewire(new, &near);
+            }
+        }
+
+        self.near = near;
+    }
+
+    #[cfg(feature = "parallel")]
+    /// The neighbor in `near` that reaches `state` most cheaply by a valid motion, with that
+    /// cost; motions are checked in order of cost until one is valid.
+    fn cheapest_valid_parent(&self, state: &Sp::State, near: &[usize]) -> Option<(usize, f64)> {
+        let mut candidates: Vec<(usize, f64)> = near
+            .iter()
+            .map(|&id| (id, self.cost_via(id, state)))
+            .collect();
+        candidates.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
+
+        candidates
+            .into_iter()
+            .find(|&(id, _)| self.growth.is_motion_valid(id, state))
+    }
+
     /// The cheapest parent for `new` among `nearest` and `near`, with its resulting cost.
     ///
     /// `nearest` is known to connect validly. Other candidates are motion-checked only when
     /// they would be cheaper, since checks dominate the run time.
     fn choose_parent(&self, nearest: usize, new: &Sp::State, near: &[usize]) -> (usize, f64) {
-        let mut best = (nearest, self.growth.cost_via(nearest, new));
+        let mut best = (nearest, self.cost_via(nearest, new));
 
         for &candidate in near {
-            let cost = self.growth.cost_via(candidate, new);
+            let cost = self.cost_via(candidate, new);
 
             if cost < best.1 && self.growth.is_motion_valid(candidate, new) {
                 best = (candidate, cost);
@@ -298,14 +398,14 @@ where
     /// Moves each node in `near` under node `id` when that lowers its cost and the motion is
     /// valid.
     fn rewire(&mut self, id: usize, near: &[usize]) {
-        let space = &self.growth.problem.space;
-
         for &node in near {
             let tree = &self.growth.tree;
-            let cost = self.growth.cost_via(id, tree.state(node));
+            let cost = self.cost_via(id, tree.state(node));
 
             if cost < tree.cost(node) && self.is_rewire_valid(id, node) {
-                self.growth.tree.reparent(space, node, id, cost);
+                let (space, objective) = (&self.growth.problem.space, &self.objective);
+                let edge_cost = |a: &Sp::State, b: &Sp::State| objective.motion_cost(space, a, b);
+                self.growth.tree.reparent(node, id, cost, edge_cost);
             }
         }
     }
@@ -333,5 +433,32 @@ where
     #[must_use]
     pub fn node_count(&self) -> usize {
         self.growth.tree.len()
+    }
+
+    /// The number of vertices retired from the nearest-neighbor index; always zero unless
+    /// [`RrtStar::with_retirement`] enabled retirement.
+    #[must_use]
+    pub const fn retired_count(&self) -> usize {
+        self.growth.retirement.retired()
+    }
+}
+
+impl<Sp, Sa, C, St, N, O> RrtStar<Sp, Sa, C, St, N, O>
+where
+    Sp: StateSpace,
+    N: RemovableNeighbors<Sp> + Clone,
+{
+    /// Retires exhausted vertices from the nearest-neighbor index: with finite steering once
+    /// all their successors are in the tree, and in any case after `failures` consecutive
+    /// failed extensions; see [the module docs](crate::trees#vertex-retirement).
+    ///
+    /// RRT* finds parent candidates and rewiring targets in the same index, so a retired vertex
+    /// is no longer a parent candidate or rewired. Its cost still drops when an ancestor is
+    /// rewired.
+    #[must_use]
+    pub fn with_retirement(mut self, failures: NonZeroUsize) -> Self {
+        let reached = self.growth.nn.clone();
+        self.growth.retirement.enable(failures, N::remove, reached);
+        self
     }
 }

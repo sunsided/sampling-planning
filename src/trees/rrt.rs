@@ -1,10 +1,13 @@
 //! RRT: the rapidly-exploring random tree (LaValle 1998).
 
+use core::num::NonZeroUsize;
+
 use rand_core::Rng;
 
 use super::{Error, growth::Growth};
 use crate::{
-    LinearScan, NearestNeighbors, Path, Problem, Sampler, StateSpace, Steering, ValidityChecker,
+    LinearScan, NearestNeighbors, Path, Problem, RemovableNeighbors, Sampler, StateSpace, Steering,
+    ValidityChecker,
 };
 
 /// Settings for [`Rrt`].
@@ -77,14 +80,16 @@ where
     /// Runs one iteration. Returns whether a node was added.
     pub fn step<R: Rng + ?Sized>(&mut self, rng: &mut R) -> bool {
         let (nearest, new) = self.growth.propose(rng);
-        if !self.growth.is_motion_valid(nearest, &new) {
-            return false;
+        let valid = self.growth.is_motion_valid(nearest, &new);
+
+        if valid {
+            let cost = self.growth.cost_via(nearest, &new);
+            self.growth.add(new.clone(), nearest, cost);
         }
 
-        let cost = self.growth.cost_via(nearest, &new);
-        self.growth.add(new, nearest, cost);
+        self.growth.record_extension(nearest, &new, valid);
 
-        true
+        valid
     }
 
     /// Runs `iterations` iterations.
@@ -123,5 +128,28 @@ where
     #[must_use]
     pub fn node_count(&self) -> usize {
         self.growth.tree.len()
+    }
+
+    /// The number of vertices retired from the nearest-neighbor index; always zero unless
+    /// [`Rrt::with_retirement`] enabled retirement.
+    #[must_use]
+    pub const fn retired_count(&self) -> usize {
+        self.growth.retirement.retired()
+    }
+}
+
+impl<Sp, Sa, C, St, N> Rrt<Sp, Sa, C, St, N>
+where
+    Sp: StateSpace,
+    N: RemovableNeighbors<Sp> + Clone,
+{
+    /// Retires exhausted vertices from the nearest-neighbor index: with finite steering once
+    /// all their successors are in the tree, and in any case after `failures` consecutive
+    /// failed extensions; see [the module docs](crate::trees#vertex-retirement).
+    #[must_use]
+    pub fn with_retirement(mut self, failures: NonZeroUsize) -> Self {
+        let reached = self.growth.nn.clone();
+        self.growth.retirement.enable(failures, N::remove, reached);
+        self
     }
 }

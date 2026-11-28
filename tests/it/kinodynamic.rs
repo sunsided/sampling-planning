@@ -218,15 +218,7 @@ fn kpiece_solves_reproducibly() {
 
 #[test]
 fn kpiece_covers_a_maze_it_has_to_explore() {
-    let mut maze = world();
-    maze.checker.obstacles = vec![
-        ([2.0, 0.0], [3.0, 8.0]),
-        ([5.0, 2.0], [6.0, 10.0]),
-        ([8.0, 0.0], [8.5, 8.0]),
-    ];
-    maze.start = [1.0, 1.0];
-    maze.goal = sampling_planning::GoalRegion::new([9.3, 1.0], 0.4);
-
+    let maze = maze();
     let projection = |state: &[f64; 2]| *state;
     let mut planner = Kpiece::new(
         maze.clone(),
@@ -269,4 +261,64 @@ fn kpiece_validates_its_config() {
         }),
         Some(Error::InvalidSchedule)
     );
+}
+
+/// The maze of [`kpiece_covers_a_maze_it_has_to_explore`]: three walls to weave through.
+fn maze() -> World {
+    let mut maze = world();
+    maze.checker.obstacles = vec![
+        ([2.0, 0.0], [3.0, 8.0]),
+        ([5.0, 2.0], [6.0, 10.0]),
+        ([8.0, 0.0], [8.5, 8.0]),
+    ];
+    maze.start = [1.0, 1.0];
+    maze.goal = sampling_planning::GoalRegion::new([9.3, 1.0], 0.4);
+
+    maze
+}
+
+#[test]
+fn multi_level_kpiece_solves_the_maze_with_nested_cells() {
+    let projection = |state: &[f64; 2]| *state;
+    let levels = core::num::NonZeroUsize::new(3).expect("non-zero");
+
+    for seed in 0..3 {
+        let config = KpieceConfig::new([0.25, 0.25], DT, 10);
+        let mut planner =
+            Kpiece::with_levels(maze(), projection, config, levels, 4).expect("valid");
+        let trajectory = planner
+            .solve(100_000, &mut Pcg64Mcg::seed_from_u64(seed))
+            .expect("multi-level KPIECE solves the maze");
+
+        assert_solves(&maze(), &trajectory);
+
+        // Every coarse cell holds at least one finer cell, so the counts shrink level by level.
+        let counts = [0, 1, 2].map(|level| planner.cell_count_at(level));
+        assert!(counts[0] > counts[1] && counts[1] > counts[2], "{counts:?}");
+        assert!(counts[2] > 0 && planner.cell_count_at(3) == 0);
+    }
+}
+
+#[test]
+fn one_level_kpiece_is_the_single_level_planner_and_ratios_are_checked() {
+    let projection = |state: &[f64; 2]| *state;
+    let config = KpieceConfig::new([0.5, 0.5], DT, 10);
+    let one = core::num::NonZeroUsize::MIN;
+    let two = core::num::NonZeroUsize::new(2).expect("non-zero");
+    let mut single = Kpiece::with_levels(world(), projection, config, one, 1).expect("valid");
+    let run = single.solve(30_000, &mut Pcg64Mcg::seed_from_u64(0));
+
+    assert_eq!(run, kpiece(0));
+    assert_eq!(
+        Kpiece::with_levels(world(), projection, config, two, 1).err(),
+        Some(Error::InvalidRadius)
+    );
+
+    // 2^63 cells per coarsest cell does not fit an `i64` coordinate; 2^62 does.
+    let levels = |n| core::num::NonZeroUsize::new(n).expect("non-zero");
+    assert_eq!(
+        Kpiece::with_levels(world(), projection, config, levels(64), 2).err(),
+        Some(Error::InvalidRadius)
+    );
+    assert!(Kpiece::with_levels(world(), projection, config, levels(63), 2).is_ok());
 }

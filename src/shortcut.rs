@@ -21,6 +21,11 @@ use crate::{Path, StateSpace, ValidityChecker, unit_f64};
 /// candidates from the end of the path backward, so a path of `m` states costs `O(m^2)`
 /// motion checks in the worst case and `O(m)` when long shortcuts exist.
 ///
+/// Shortcutting prices paths by length under [`StateSpace::distance`] and compares with
+/// [`Path::cost`]. A path from a planner with another
+/// [`CostObjective`](crate::CostObjective) carries that objective's cost, so it must not be
+/// shortcut as is: a shortcut can cut through high-risk regions.
+///
 /// # Examples
 ///
 /// ```
@@ -114,6 +119,11 @@ where
 /// states, so it also straightens corners. All three motions of a splice are checked: from
 /// the state before the cut to its first point, across the cut, and from its second point to
 /// the state after it. Run [`shortcut`] afterward to drop states that became redundant.
+///
+/// Shortcutting prices paths by length under [`StateSpace::distance`] and compares with
+/// [`Path::cost`]. A path from a planner with another
+/// [`CostObjective`](crate::CostObjective) carries that objective's cost, so it must not be
+/// shortcut as is: a shortcut can cut through high-risk regions.
 ///
 /// # Examples
 ///

@@ -27,7 +27,7 @@ use core::fmt;
 
 pub use bfmt_star::{BfmtStar, BfmtStarConfig, Termination};
 pub use fmt_star::{FmtStar, FmtStarConfig};
-pub use prm::{Connection, Prm, PrmConfig};
+pub use prm::{Connection, Prm, PrmConfig, QueryWorkspace};
 pub use spars::{Spars, SparsConfig};
 pub use spars2::{NEAR_ATTEMPTS, Spars2, Spars2Config};
 pub use sparse::GuardKind;

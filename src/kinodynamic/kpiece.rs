@@ -1,8 +1,10 @@
-//! KPIECE: kinodynamic planning by interior-exterior cell exploration (Sucan and Kavraki).
+//! KPIECE: kinodynamic planning by interior-exterior cell exploration (Sucan and Kavraki),
+//! with one or several grid levels.
 
 mod grid;
 
 use alloc::vec::Vec;
+use core::num::NonZeroUsize;
 
 use rand_core::Rng;
 
@@ -132,9 +134,24 @@ struct Motion<S, U> {
 /// Cells are ranked by importance `score / ((neighbors + 1) coverage selections)`; a new cell
 /// starts with score `(1 + ln i) / (1e-3 + goal distance)`. Within a cell, motions are picked
 /// from a half-normal distribution centered on the newest one. This follows OMPL's
-/// `control::KPIECE1` with a single grid level, which also expands from the end state of the
-/// chosen motion rather than a random state along it. With probability `goal_bias` one of the
-/// `close_samples` motions closest to the goal is expanded instead.
+/// `control::KPIECE1`, which has a single grid level and also expands from the end state of
+/// the chosen motion rather than a random state along it. With probability `goal_bias` one of
+/// the `close_samples` motions closest to the goal is expanded instead.
+///
+/// # Multi-level grids
+///
+/// [`Kpiece::with_levels`] adds coarser grid levels, after the multi-level discretization of
+/// Sucan and Kavraki (OMPL implements only one level). Level `l` has cells `ratio^l`
+/// times the finest cell size per axis, and each coarse cell holds the finer cells inside it.
+/// Selection descends from the coarsest level: it picks a cell among all coarsest cells, then
+/// one among the chosen cell's children, and so on down to a finest cell, each time with the
+/// exterior rule and the importance ranking above, applied within that cell's own level
+/// (interior means all `2K` neighbors exist on that level). The exterior share is that of the
+/// candidates, so the bias adapts inside every coarse cell. Selection counts, coverage and
+/// score updates apply to the finest cell and all cells enclosing it; a new coarse cell starts
+/// with the score of the finest cell that created it. Coarse levels let the search spread over
+/// a large projection space while the finest level keeps the coverage estimate precise. With
+/// one level the planner, and its random stream, is exactly the single-level one.
 ///
 /// KPIECE is probabilistically complete but not asymptotically optimal: [`Kpiece::solve`]
 /// stops at the first motion that reaches the goal region. It needs no state sampler; the
@@ -214,8 +231,11 @@ where
     config: KpieceConfig<K>,
     /// All motions; motion `0` is the start.
     motions: Vec<Motion<Sp::State, P::Control>>,
-    /// The grid over the motions' end states.
-    grid: Grid<K>,
+    /// The grid levels over the motions' end states, finest first; never empty. Level `l`
+    /// has cells `ratio^l` times the configured cell size per axis.
+    levels: Vec<Grid<K>>,
+    /// How many cells of one level fit along each axis of a cell of the next coarser level.
+    ratio: i64,
     /// Up to `close_samples` motions closest to the goal as `(goal distance, motion)`, closest
     /// first.
     close: Vec<(f64, usize)>,
@@ -248,7 +268,35 @@ where
         projection: Pr,
         config: KpieceConfig<K>,
     ) -> Result<Self, Error> {
+        Self::with_levels(problem, projection, config, NonZeroUsize::MIN, 2)
+    }
+
+    /// Creates a multi-level planner with `levels` grid levels, after Sucan and Kavraki's
+    /// multi-level discretization; see [the type docs](Kpiece#multi-level-grids).
+    ///
+    /// The finest level has [`KpieceConfig::cell_size`]; each coarser level has cells `ratio`
+    /// times as large per axis. One level is the single-level planner of [`Kpiece::new`].
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Kpiece::new`], and [`Error::InvalidRadius`] if there are several levels
+    /// and `ratio` is below two, or if the coarsest level's scale `ratio^(levels - 1)` does
+    /// not fit in an `i64` cell coordinate.
+    pub fn with_levels(
+        problem: KinodynamicProblem<Sp, Sa, C, P>,
+        projection: Pr,
+        config: KpieceConfig<K>,
+        levels: NonZeroUsize,
+        ratio: u32,
+    ) -> Result<Self, Error> {
         config.validate()?;
+
+        let coarsest_scale = u32::try_from(levels.get() - 1)
+            .ok()
+            .and_then(|exponent| i64::from(ratio).checked_pow(exponent));
+        if (levels.get() > 1 && ratio < 2) || coarsest_scale.is_none() {
+            return Err(Error::InvalidRadius);
+        }
 
         let validity = problem.checker.check_state(&problem.start);
         if !validity.is_valid() {
@@ -260,7 +308,8 @@ where
             projection,
             config,
             motions: Vec::new(),
-            grid: Grid::new(),
+            levels: (0..levels.get()).map(|_| Grid::new()).collect(),
+            ratio: i64::from(ratio),
             close: Vec::new(),
             solution: None,
             iteration: 1,
@@ -314,21 +363,60 @@ where
             return (motion, self.motions[motion].cell);
         }
 
-        let exterior = unit_f64(rng) < self.config.exterior_bias.max(self.grid.exterior_fraction());
-        let cell = self
-            .grid
-            .select(exterior)
-            .expect("the start cell always exists");
+        let coarsest = self.levels.len() - 1;
+        let mut cell = self.select_cell(coarsest, None, rng);
 
-        if self.grid.cells[cell].score < f64::EPSILON {
-            self.grid.refresh_scores();
+        for level in (0..coarsest).rev() {
+            // Borrow the children out of the enclosing cell while selecting among them.
+            let children = core::mem::take(&mut self.levels[level + 1].cells[cell].members);
+            let child = self.select_cell(level, Some(&children), rng);
+            self.levels[level + 1].cells[cell].members = children;
+            cell = child;
         }
 
-        let entry = &mut self.grid.cells[cell];
-        entry.selections += 1.0;
-        let pick = half_normal_index(entry.motions.len(), rng);
+        let members = &self.levels[0].cells[cell].members;
+        let pick = half_normal_index(members.len(), rng);
 
-        (entry.motions[pick], cell)
+        (members[pick], cell)
+    }
+
+    /// Selects a cell on `level` among `among` (every cell when `None`): exterior with
+    /// probability `max(exterior_bias, exterior share)`, then by importance. Counts the
+    /// selection and refreshes the level's scores once they have decayed.
+    fn select_cell<R: Rng + ?Sized>(
+        &mut self,
+        level: usize,
+        among: Option<&[usize]>,
+        rng: &mut R,
+    ) -> usize {
+        let grid = &mut self.levels[level];
+        let exterior = unit_f64(rng) < self.config.exterior_bias.max(grid.exterior_fraction(among));
+        let cell = grid
+            .select(among, exterior)
+            .expect("the start cell and its enclosing cells always exist");
+
+        if grid.cells[cell].score < f64::EPSILON {
+            grid.refresh_scores();
+        }
+
+        grid.cells[cell].selections += 1.0;
+
+        cell
+    }
+
+    /// The ids of `cell` on the finest level and of its enclosing cells, finest first, as
+    /// `(level, cell)` pairs.
+    fn chain(&self, cell: usize) -> impl Iterator<Item = (usize, usize)> + '_ {
+        let mut current = Some((0, cell));
+
+        core::iter::from_fn(move || {
+            let (level, cell) = current?;
+            current = self.levels[level].cells[cell]
+                .parent
+                .map(|parent| (level + 1, parent));
+
+            Some((level, cell))
+        })
     }
 
     /// The closest-to-goal motion; it stays a close sample with its distance inflated to
@@ -403,7 +491,7 @@ where
                 cost,
                 cell,
             );
-            self.grid.cells[cell].coverage += count_to_f64(end - start);
+            self.add_coverage(cell, count_to_f64(end - start));
             start = end;
         }
 
@@ -413,25 +501,59 @@ where
     /// Whether a propagation through cells `coords` adds information: a new cell, or a sparsely
     /// populated one.
     fn is_interesting(&self, coords: &[[i64; K]]) -> bool {
-        let threshold = 2 * self.motions.len() / (3 * self.grid.cells.len());
+        let finest = &self.levels[0];
+        let threshold = 2 * self.motions.len() / (3 * finest.cells.len());
 
         coords.iter().any(|coord| {
-            self.grid
+            finest
                 .find(coord)
-                .is_none_or(|cell| self.grid.cells[cell].motions.len() <= threshold)
+                .is_none_or(|cell| finest.cells[cell].members.len() <= threshold)
         })
     }
 
-    /// The cell at `coord`, created with a goal-distance score for `state` if needed.
+    /// The finest-level cell at `coord`, created with a goal-distance score for `state` if
+    /// needed, together with any missing enclosing cells on the coarser levels.
     fn cell_for(&mut self, coord: [i64; K], state: &Sp::State) -> usize {
-        if let Some(cell) = self.grid.find(&coord) {
+        if let Some(cell) = self.levels[0].find(&coord) {
             return cell;
         }
 
         let score =
             (1.0 + libm::log(count_to_f64(self.iteration))) / (1e-3 + self.goal_distance(state));
+        let finest = self.levels[0].add(coord, self.iteration, score);
+        let mut child = finest;
 
-        self.grid.add(coord, self.iteration, score)
+        for level in 1..self.levels.len() {
+            // `with_levels` checked that the coarsest scale fits, so this never saturates.
+            let scale = self
+                .ratio
+                .saturating_pow(u32::try_from(level).unwrap_or(u32::MAX));
+            let coarse = coord.map(|c| c.div_euclid(scale));
+            let existing = self.levels[level].find(&coarse);
+            let parent =
+                existing.unwrap_or_else(|| self.levels[level].add(coarse, self.iteration, score));
+
+            self.levels[level - 1].cells[child].parent = Some(parent);
+            self.levels[level].cells[parent].members.push(child);
+
+            if existing.is_some() {
+                break;
+            }
+
+            child = parent;
+        }
+
+        finest
+    }
+
+    /// Adds `steps` integration steps to the coverage of finest-level `cell` and its enclosing
+    /// cells.
+    fn add_coverage(&mut self, cell: usize, steps: f64) {
+        let chain: Vec<(usize, usize)> = self.chain(cell).collect();
+
+        for (level, id) in chain {
+            self.levels[level].cells[id].coverage += steps;
+        }
     }
 
     /// Stores a motion in its cell, the close samples and, if it reaches the goal first, as the
@@ -450,7 +572,7 @@ where
         let cell = if parent.is_none() {
             let coord = self.coordinates(&state);
             let cell = self.cell_for(coord, &state);
-            self.grid.cells[cell].coverage = 1.0;
+            self.add_coverage(cell, 1.0);
 
             cell
         } else {
@@ -461,7 +583,7 @@ where
             self.solution = Some(id);
         }
 
-        self.grid.cells[cell].motions.push(id);
+        self.levels[0].cells[cell].members.push(id);
         self.insert_close(distance, id);
         self.motions.push(Motion {
             state,
@@ -484,13 +606,19 @@ where
         }
     }
 
-    /// Scales the score of `cell` by the good or bad factor.
+    /// Scales the score of finest-level `cell` and its enclosing cells by the good or bad
+    /// factor.
     fn rescore(&mut self, cell: usize, good: bool) {
-        self.grid.cells[cell].score *= if good {
+        let factor = if good {
             self.config.good_score_factor
         } else {
             self.config.bad_score_factor
         };
+        let chain: Vec<(usize, usize)> = self.chain(cell).collect();
+
+        for (level, id) in chain {
+            self.levels[level].cells[id].score *= factor;
+        }
     }
 
     /// The grid coordinates of `state`.
@@ -538,10 +666,17 @@ where
         self.motions.len()
     }
 
-    /// The number of instantiated grid cells.
+    /// The number of instantiated cells on the finest grid level.
     #[must_use]
     pub fn cell_count(&self) -> usize {
-        self.grid.cells.len()
+        self.levels[0].cells.len()
+    }
+
+    /// The number of instantiated cells on grid `level`, `0` being the finest; zero for a
+    /// level the planner does not have.
+    #[must_use]
+    pub fn cell_count_at(&self, level: usize) -> usize {
+        self.levels.get(level).map_or(0, |grid| grid.cells.len())
     }
 }
 

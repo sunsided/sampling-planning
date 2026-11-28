@@ -1,10 +1,11 @@
-//! Batch-informed planners: BIT* and AIT*.
+//! Batch-informed planners: BIT*, ABIT*, AIT* and EIT*.
 //!
 //! These planners process samples in batches and search the implicit random geometric graph
 //! over them in order of a heuristic estimate of the solution cost through each edge, like A*.
 //! After the first solution they only sample and keep states that can still improve it.
 //!
-//! [`BitStar`] orders its search by the geometric cost-to-go. [`AitStar`] computes the
+//! [`BitStar`] orders its search by the geometric cost-to-go. [`AbitStar`] runs the same search
+//! with an inflated heuristic and truncates it early. [`AitStar`] computes the
 //! cost-to-go over the graph itself with a lazy reverse search (LPA*, no collision checks) and
 //! repairs it whenever the forward search finds an edge invalid; see its docs for the loop.
 //!
@@ -17,15 +18,19 @@
 //!     Edge -->|cannot improve| Batch
 //! ```
 
+mod abit_star;
 mod ait_star;
 mod batch;
 mod bit_star;
+mod eit_star;
 mod queues;
 
 use core::fmt;
 
+pub use abit_star::{AbitStar, AbitStarConfig};
 pub use ait_star::{AitStar, AitStarConfig};
 pub use bit_star::{BitStar, BitStarConfig};
+pub use eit_star::{EitStar, EitStarConfig};
 
 use crate::Validity;
 
