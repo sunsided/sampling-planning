@@ -280,7 +280,8 @@ where
     /// # Errors
     ///
     /// The same as [`Kpiece::new`], and [`Error::InvalidRadius`] if there are several levels
-    /// and `ratio` is below two.
+    /// and `ratio` is below two, or if the coarsest level's scale `ratio^(levels - 1)` does
+    /// not fit in an `i64` cell coordinate.
     pub fn with_levels(
         problem: KinodynamicProblem<Sp, Sa, C, P>,
         projection: Pr,
@@ -290,7 +291,10 @@ where
     ) -> Result<Self, Error> {
         config.validate()?;
 
-        if levels.get() > 1 && ratio < 2 {
+        let coarsest_scale = u32::try_from(levels.get() - 1)
+            .ok()
+            .and_then(|exponent| i64::from(ratio).checked_pow(exponent));
+        if (levels.get() > 1 && ratio < 2) || coarsest_scale.is_none() {
             return Err(Error::InvalidRadius);
         }
 
@@ -520,6 +524,7 @@ where
         let mut child = finest;
 
         for level in 1..self.levels.len() {
+            // `with_levels` checked that the coarsest scale fits, so this never saturates.
             let scale = self
                 .ratio
                 .saturating_pow(u32::try_from(level).unwrap_or(u32::MAX));

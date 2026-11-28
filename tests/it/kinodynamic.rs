@@ -313,4 +313,12 @@ fn one_level_kpiece_is_the_single_level_planner_and_ratios_are_checked() {
         Kpiece::with_levels(world(), projection, config, two, 1).err(),
         Some(Error::InvalidRadius)
     );
+
+    // 2^63 cells per coarsest cell does not fit an `i64` coordinate; 2^62 does.
+    let levels = |n| core::num::NonZeroUsize::new(n).expect("non-zero");
+    assert_eq!(
+        Kpiece::with_levels(world(), projection, config, levels(64), 2).err(),
+        Some(Error::InvalidRadius)
+    );
+    assert!(Kpiece::with_levels(world(), projection, config, levels(63), 2).is_ok());
 }

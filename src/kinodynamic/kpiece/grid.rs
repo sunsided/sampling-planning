@@ -154,14 +154,15 @@ impl<const K: usize> Grid<K> {
     }
 }
 
-/// The `2K` coordinates one step away from `coord` along a single axis.
+/// The up to `2K` coordinates one step away from `coord` along a single axis; none past the
+/// ends of the `i64` range, where a cell has no neighbor (and never itself).
 fn axis_neighbors<const K: usize>(coord: &[i64; K]) -> impl Iterator<Item = [i64; K]> + '_ {
     (0..K).flat_map(move |axis| {
-        [-1, 1].into_iter().map(move |delta| {
+        [-1, 1].into_iter().filter_map(move |delta| {
             let mut neighbor = *coord;
-            neighbor[axis] = neighbor[axis].saturating_add(delta);
+            neighbor[axis] = neighbor[axis].checked_add(delta)?;
 
-            neighbor
+            Some(neighbor)
         })
     })
 }
@@ -187,6 +188,17 @@ mod tests {
         assert_eq!(grid.cells[grid.find(&[1, 0]).expect("added")].neighbors, 1);
         assert!((grid.exterior_fraction(None) - 0.8).abs() < 1e-12);
         assert!((grid.exterior_fraction(Some(&[center])) - 0.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_cell_at_the_end_of_the_coordinate_range_is_not_its_own_neighbor() {
+        let mut grid = Grid::<1>::new();
+        let edge = grid.add([i64::MAX], 1, 1.0);
+        assert_eq!(grid.cells[edge].neighbors, 0);
+
+        let inner = grid.add([i64::MAX - 1], 1, 1.0);
+        assert_eq!(grid.cells[edge].neighbors, 1);
+        assert_eq!(grid.cells[inner].neighbors, 1);
     }
 
     #[test]
