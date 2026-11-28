@@ -78,6 +78,11 @@ impl<const N: usize> LoewnerBound<N> {
     /// `L V diag(min(lambda, 1)) V^T L^T`. Returns whether the bound changed; it does not when
     /// it already lies below `metric`.
     ///
+    /// When `metric` or the bound is too badly conditioned for that (a relative eigenvalue
+    /// rounds to zero or below, or the new bound fails to factorize), the bound becomes `t I`
+    /// instead, with `t` below the smallest eigenvalue of both: still a lower bound of every
+    /// metric seen, but no longer a maximal one.
+    ///
     /// # Panics
     ///
     /// Panics if `metric` is not finite, symmetric and positive definite.
@@ -102,14 +107,40 @@ impl<const N: usize> LoewnerBound<N> {
         });
         let lower = symmetrize(&congruence(&self.factor, &inner));
 
-        // The clamped eigenvalues are positive, so the product is positive definite; should
-        // rounding make it fail, keep the old bound below the new metric by scaling it.
-        self.factor = cholesky(&lower).unwrap_or_else(|| {
-            let scale = libm::sqrt(eigenvalues.iter().copied().fold(1.0, f64::min));
-            self.factor.map(|row| row.map(|value| value * scale))
-        });
+        // With positive eigenvalues the product is positive definite. For badly conditioned
+        // metrics rounding can make an eigenvalue zero, negative or NaN, or the factorization
+        // fail; then fall back to an isotropic bound below both.
+        let factored = eigenvalues
+            .iter()
+            .all(|&lambda| lambda > 0.0 && lambda.is_finite())
+            .then(|| cholesky(&lower))
+            .flatten();
+        self.factor = factored.unwrap_or_else(|| self.isotropic_below(metric));
 
         true
+    }
+
+    /// The factor of `t I`, with `t` below the smallest eigenvalue of both the bound and
+    /// `metric`: `t I` lies below both, so it stays below every metric the bound was.
+    fn isotropic_below(&self, metric: &[[f64; N]; N]) -> [[f64; N]; N] {
+        let metric = Self {
+            factor: cholesky(metric).expect("`meet` checked that the metric factorizes"),
+        };
+        let t = self.eigenvalue_floor().min(metric.eigenvalue_floor());
+        let diagonal = libm::sqrt(t * (1.0 - 1e-9));
+
+        core::array::from_fn(|i| core::array::from_fn(|j| if i == j { diagonal } else { 0.0 }))
+    }
+
+    /// `1 / |L^-1|_F^2`, a positive lower bound on the smallest eigenvalue `1 / |L^-1|_2^2` of
+    /// `L L^T`, since the Frobenius norm bounds the spectral norm. Unlike a computed smallest
+    /// eigenvalue it stays positive however badly the bound is conditioned.
+    fn eigenvalue_floor(&self) -> f64 {
+        let identity: [[f64; N]; N] =
+            core::array::from_fn(|i| core::array::from_fn(|j| if i == j { 1.0 } else { 0.0 }));
+        let inverse = self.solve_lower_columns(&identity);
+
+        1.0 / inverse.iter().flatten().map(|v| v * v).sum::<f64>()
     }
 
     /// Whether the bound lies below `metric` up to `tolerance`: the smallest eigenvalue of
@@ -311,6 +342,59 @@ fn rotate<const N: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The smallest eigenvalue of the symmetric matrix `m`; NaN if `m` is not finite.
+    fn smallest_eigenvalue<const N: usize>(m: &[[f64; N]; N]) -> f64 {
+        let (eigenvalues, _) = symmetric_eigen(m);
+
+        eigenvalues
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, |acc, lambda| {
+                if lambda.is_nan() || acc.is_nan() {
+                    f64::NAN
+                } else {
+                    acc.min(lambda)
+                }
+            })
+    }
+
+    use rand_core::SeedableRng;
+
+    #[test]
+    fn badly_conditioned_metrics_still_give_a_finite_bound_below_each() {
+        // Rank-one plus up to 1e-12 times the identity: condition numbers up to about 1e12,
+        // where the relative eigenvalues and the factorization lose their accuracy.
+        let mut rng = rand_pcg::Pcg64Mcg::seed_from_u64(2);
+        let mut metric = || {
+            let (a, b) = (
+                2.0 * crate::unit_f64(&mut rng) - 1.0,
+                2.0 * crate::unit_f64(&mut rng) - 1.0,
+            );
+            let c = libm::pow(10.0, -12.0 * crate::unit_f64(&mut rng));
+            [[a * a + c, a * b], [a * b, b * b + c]]
+        };
+
+        for _ in 0..50_000 {
+            let metrics = [metric(), metric(), metric()];
+            let Some(bound) = LoewnerBound::from_metrics(metrics) else {
+                continue;
+            };
+
+            // Below each metric up to rounding: `G - G_lower` positive semidefinite to within
+            // `1e-9 |G|`. A relative check like `is_below` cannot be that exact here.
+            let lower = bound.matrix();
+            assert!((0..2).all(|i| bound.factor()[i][i] > 0.0), "{metrics:?}");
+            for m in &metrics {
+                let gap: [[f64; 2]; 2] =
+                    core::array::from_fn(|i| core::array::from_fn(|j| m[i][j] - lower[i][j]));
+                let (eigenvalues, _) = symmetric_eigen(m);
+                let scale = eigenvalues[0].abs().max(eigenvalues[1].abs());
+                let slack = smallest_eigenvalue(&gap);
+                assert!(slack >= -1e-9 * scale, "{metrics:?} gave {lower:?}");
+            }
+        }
+    }
 
     /// A tilted positive definite 3 x 3 matrix.
     const TILTED: [[f64; 3]; 3] = [[4.0, 1.0, 0.5], [1.0, 3.0, -0.4], [0.5, -0.4, 2.0]];
