@@ -12,6 +12,11 @@ pub use kd_tree::KdTree;
 pub use linear::LinearScan;
 pub use vp_tree::VpTree;
 
+/// The panic message where a planner's index is never empty but `nearest` found nothing,
+/// which only NaN distances cause.
+pub(crate) const NO_NEAREST: &str =
+    "no nearest node in a non-empty index: StateSpace::distance returned NaN for every node";
+
 /// Stores planner nodes by id and answers proximity queries under a [`StateSpace`] metric.
 ///
 /// Ids are the planner's node ids, so the structure needs no back-pointers. Queries break

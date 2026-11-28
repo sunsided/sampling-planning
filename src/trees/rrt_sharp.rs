@@ -225,7 +225,7 @@ where
         let nearest = self
             .nn
             .nearest(space, &target)
-            .expect("the graph always holds the start");
+            .expect(crate::nearest::NO_NEAREST);
         let from = &self.vertices[nearest].state;
         let new = self.problem.steering.steer(space, from, &target);
 

@@ -34,8 +34,11 @@ pub trait StateSpace {
     ///
     /// The length of the shortest motion from `from` to `to`.
     ///
-    /// Must be non-negative, zero for equal states and satisfy the triangle inequality. It
-    /// should be symmetric; [`Dubins`] is the exception, because a forward-only car's way back
+    /// Must be non-negative, never NaN, zero for equal states and satisfy the triangle
+    /// inequality. Nearest-neighbor queries skip NaN distances, and the planners panic when
+    /// every node is at a NaN distance from a query.
+    ///
+    /// It should be symmetric; [`Dubins`] is the exception, because a forward-only car's way back
     /// is longer. Forward tree planners ([`Rrt`](crate::trees::Rrt),
     /// [`RrtStar`](crate::trees::RrtStar), [`RrtSharp`](crate::trees::RrtSharp),
     /// [`Sst`](crate::kinodynamic::Sst)) always measure from a tree node to the target and

@@ -407,3 +407,53 @@ fn reaching_the_goal_center_again_adds_no_duplicate_nodes() {
         sharp.node_count()
     );
 }
+
+/// The plane with a broken metric: every distance is NaN.
+#[derive(Debug, Clone, Copy)]
+struct NanPlane;
+
+impl sampling_planning::StateSpace for NanPlane {
+    type State = [f64; 2];
+
+    fn dimension(&self) -> usize {
+        2
+    }
+
+    fn distance(&self, _: &[f64; 2], _: &[f64; 2]) -> f64 {
+        f64::NAN
+    }
+
+    fn interpolate(&self, from: &[f64; 2], to: &[f64; 2], t: f64) -> [f64; 2] {
+        Euclidean::<2>.interpolate(from, to, t)
+    }
+}
+
+/// Free space for [`NanPlane`].
+struct FreePlane;
+
+impl sampling_planning::ValidityChecker<NanPlane> for FreePlane {
+    fn check_state(&self, _: &[f64; 2]) -> Validity {
+        Validity::Valid
+    }
+
+    fn check_motion(&self, _: &NanPlane, _: &[f64; 2], _: &[f64; 2]) -> Validity {
+        Validity::Valid
+    }
+}
+
+#[test]
+#[should_panic(expected = "StateSpace::distance returned NaN for every node")]
+fn a_nan_metric_panics_with_a_message_that_names_it() {
+    let world = problem(Boxes::default());
+    let problem = Problem {
+        space: NanPlane,
+        sampler: world.sampler,
+        checker: FreePlane,
+        steering: world.steering,
+        start: world.start,
+        goal: world.goal,
+    };
+    let mut rrt = Rrt::new(problem, RrtConfig::default()).expect("valid problem");
+
+    rrt.step(&mut Pcg64Mcg::seed_from_u64(1));
+}

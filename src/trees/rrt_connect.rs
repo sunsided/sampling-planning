@@ -334,7 +334,7 @@ where
         self.half(side)
             .nn
             .nearest(&self.problem.space, target)
-            .expect("each tree always holds its root")
+            .expect(crate::nearest::NO_NEAREST)
     }
 
     /// Whether the edge between node `parent` on `side` and the new state `new` is valid in

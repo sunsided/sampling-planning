@@ -183,7 +183,7 @@ where
             .indexed
             .nn
             .nearest(&self.problem.space, target)
-            .expect("the tree always holds the root");
+            .expect(crate::nearest::NO_NEAREST);
         let new = self.problem.steering.steer(
             &self.problem.space,
             self.indexed.tree.state(nearest),
