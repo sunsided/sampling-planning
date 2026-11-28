@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/sunsided/sampling-planning/compare/v0.1.1...v0.2.0) - 2026-11-28
+
+### Added
+
+- Add real-world examples for every planner family
+- Add ABIT*, EIT*, multi-level KPIECE, SE(3) and cost objectives
+
+### Changed
+
+- Make the parking example solve every seed, flag failed KPIECE runs
+- Report infinite risk where the risk integral is not computable
+- Reject KPIECE level ratios whose scale overflows, stop self-neighbors
+- Keep every node when merging an RRT* forest
+
 ## [0.1.1](https://github.com/sunsided/sampling-planning/compare/v0.1.0...v0.1.1) - 2026-11-22
 
 ### Changed
