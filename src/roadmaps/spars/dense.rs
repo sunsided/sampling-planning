@@ -135,12 +135,13 @@ where
             .collect()
     }
 
-    /// The first dense neighbor of `q`, in edge order, within `dense_delta` and represented by
-    /// `rep`, or `None` (where OMPL's `getInterfaceNeighbor` throws).
+    /// The first dense neighbor of `q`, in edge order, closer than `dense_delta` and represented
+    /// by `rep`, or `None` (where OMPL's `getInterfaceNeighbor` throws). Strict like
+    /// [`Self::interface_neighborhood`], so it only returns nodes that one counts.
     pub(super) fn interface_neighbor(&self, q: usize, rep: usize) -> Option<usize> {
         self.dense_adjacency[q].iter().copied().find(|&n| {
             self.representatives[n] == Some(rep)
-                && self.dense_distance(q, n) <= self.config.dense_delta
+                && self.dense_distance(q, n) < self.config.dense_delta
         })
     }
 

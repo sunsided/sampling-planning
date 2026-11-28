@@ -42,7 +42,8 @@ pub trait StateSpace {
     /// work with asymmetric distances. Planners that need symmetry: [`Prm`](crate::roadmaps::Prm)
     /// stores one cost per edge for both directions, the goal tree of
     /// [`RrtConnect`](crate::trees::RrtConnect) measures from the target to its nodes,
-    /// [`Spars2`](crate::roadmaps::Spars2) keeps undirected edges, and
+    /// [`Spars`](crate::roadmaps::Spars) and [`Spars2`](crate::roadmaps::Spars2) keep undirected
+    /// edges, and
     /// [`FmtStar`](crate::roadmaps::FmtStar), [`BfmtStar`](crate::roadmaps::BfmtStar),
     /// [`BitStar`](crate::informed::BitStar) and [`KdTree`](crate::KdTree) assume a metric
     /// for their neighborhoods and heuristics.

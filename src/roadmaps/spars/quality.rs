@@ -117,20 +117,11 @@ where
 
     /// Adds `states` as a chain of quality guards from guard `from` to guard `to`, after
     /// dropping states the greedy [`shortcut()`](crate::shortcut()) skips (in place of OMPL's `reduceVertices`).
-    /// With at most one state, connects `from` and `to` directly and resets the failure
-    /// counter. Every sparse edge is checked first; returns `false`, changing nothing, if one
-    /// is invalid.
+    /// Every sparse edge is checked first; returns `false`, changing nothing, if one is invalid.
+    ///
+    /// OMPL also handles a path of at most one state by connecting `from` and `to` directly;
+    /// [`Self::add_quality_path`] always passes at least three, so that case does not exist here.
     fn add_path_to_spanner(&mut self, states: Vec<Sp::State>, from: usize, to: usize) -> bool {
-        if states.len() <= 1 {
-            if !self.is_guard_edge_valid(from, to) {
-                return false;
-            }
-
-            self.graph.connect(from, to);
-            self.failures = 0;
-            return true;
-        }
-
         let states = self.reduce_vertices(states);
         if !self.is_chain_valid(from, &states, to) {
             return false;

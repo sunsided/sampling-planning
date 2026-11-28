@@ -115,7 +115,7 @@ impl SparsConfig {
 /// (`addMilestone`, `calculateRepresentative`, `updateRepresentatives` over the dense nodes
 /// within `sparse_delta + dense_delta` of each new guard), the loop nesting of `checkAddPath`
 /// and the failure counting (incremented only when all four tests fail, reset by every new
-/// guard, the direct interface edge and the zero-length path case) follow OMPL. Differences to
+/// guard and the direct interface edge) follow OMPL. Differences to
 /// OMPL's `SPARS`, documented here so that results can be compared:
 ///
 /// - OMPL connects the first state of an added quality path to `v''` and the last to `v'`
@@ -131,6 +131,8 @@ impl SparsConfig {
 /// - OMPL's randomized `reduceVertices` is replaced by the deterministic greedy
 ///   [`shortcut`](crate::shortcut()).
 /// - Dense paths come from Dijkstra (ties by id) instead of A*; their lengths agree.
+/// - An interface neighbor is closer than `dense_delta`, in the neighborhood and in the
+///   neighbor lookup alike, so a node at exactly `dense_delta` is neither.
 /// - A dense node without a visible guard has no representative (OMPL leaves an unset value);
 ///   it is kept out of interface lists until a guard covers it, which the coverage criterion
 ///   does in the same step.
