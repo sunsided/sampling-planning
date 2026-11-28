@@ -15,6 +15,8 @@ where
     /// Queues the forward edges from vertex `vertex` to its neighbors, except `skip` and
     /// pruned or known-invalid ones.
     pub(super) fn expand_forward(&mut self, vertex: usize, skip: Option<usize>) {
+        self.ensure_adjacent(vertex);
+
         for index in 0..self.nodes[vertex].adjacent.len() {
             let target = self.nodes[vertex].adjacent[index];
 
@@ -97,6 +99,8 @@ where
 
     /// Re-keys the queued forward edges out of `from`, after its cost-to-come changed.
     fn refresh_forward_from(&mut self, from: usize) {
+        self.ensure_adjacent(from);
+
         for index in 0..self.nodes[from].adjacent.len() {
             let to = self.nodes[from].adjacent[index];
             self.refresh_forward(from, to);

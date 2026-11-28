@@ -102,8 +102,14 @@ struct Node<S> {
     parent: Option<usize>,
     /// The forward-tree children.
     children: Vec<usize>,
-    /// The batch graph's neighbors, by id, sorted.
+    /// The batch graph's neighbors, by id, sorted. Valid while `adjacent_batch` is the
+    /// current batch; see [`EitStar::ensure_adjacent`].
     adjacent: Vec<usize>,
+    /// The batch whose graph `adjacent` holds; `0` before the first batch.
+    adjacent_batch: usize,
+    /// The forward-tree parent and children at the start of the batch, which join the
+    /// lazily built neighbor list.
+    tree_links: Vec<usize>,
     /// The reverse search's cost-to-go over the batch graph with sparsely checked edges;
     /// infinite until reached. Admissible for the current graph only.
     h: f64,
@@ -396,6 +402,8 @@ where
             parent: None,
             children: Vec::new(),
             adjacent: Vec::new(),
+            adjacent_batch: 0,
+            tree_links: Vec::new(),
             h: f64::INFINITY,
             effort: usize::MAX,
             reverse_parent: None,
@@ -539,11 +547,17 @@ where
 
     /// Rebuilds the batch graph: symmetrized neighbors of every live state plus the forward
     /// tree's own edges, minus nothing (invalid edges are skipped when used).
+    ///
+    /// With a connection radius the neighbor lists are built lazily, on a state's first use
+    /// in the batch ([`EitStar::ensure_adjacent`]), as OMPL does: a radius query from `x`
+    /// finds exactly the states whose own query would find `x` (the distance is symmetric),
+    /// so a lazy list equals the symmetrized one, and states the searches never touch cost
+    /// nothing. `k` nearest neighbors are not symmetric, so that rule builds the whole
+    /// symmetrized graph here.
     fn build_graph(&mut self) {
-        let mut near = Vec::new();
-
         for node in &mut self.nodes {
             node.adjacent.clear();
+            node.tree_links.clear();
         }
 
         for id in 0..self.nodes.len() {
@@ -551,35 +565,75 @@ where
                 continue;
             }
 
-            let cap = self.config.bit.max_radius;
-            let keep = |x| x != id && (cap.is_infinite() || self.cost_estimate(id, x) <= cap);
-            self.neighborhood.query(
-                &self.space,
-                &self.nn,
-                &self.nodes[id].state,
-                keep,
-                &mut near,
-            );
-
-            for &other in &near {
-                self.link(id, other);
-            }
-
             if let Some(parent) = self.nodes[id].parent {
-                self.link(id, parent);
+                self.nodes[id].tree_links.push(parent);
+                self.nodes[parent].tree_links.push(id);
             }
         }
 
-        for node in &mut self.nodes {
-            node.adjacent.sort_unstable();
-            node.adjacent.dedup();
+        if matches!(self.neighborhood, Neighborhood::Nearest(_)) {
+            self.build_symmetrized_graph();
         }
     }
 
-    /// Records `a` and `b` as neighbors of each other.
-    fn link(&mut self, a: usize, b: usize) {
-        self.nodes[a].adjacent.push(b);
-        self.nodes[b].adjacent.push(a);
+    /// Builds every live state's neighbor list for the `k`-nearest rule: its own neighbors,
+    /// those that have it as a neighbor, and its tree links.
+    fn build_symmetrized_graph(&mut self) {
+        let mut near = Vec::new();
+
+        for id in 0..self.nodes.len() {
+            if self.nodes[id].kind == Kind::Pruned {
+                continue;
+            }
+
+            self.query_neighbors(id, &mut near);
+            for &other in &near {
+                self.nodes[id].adjacent.push(other);
+                self.nodes[other].adjacent.push(id);
+            }
+        }
+
+        for id in 0..self.nodes.len() {
+            let links = core::mem::take(&mut self.nodes[id].tree_links);
+            let node = &mut self.nodes[id];
+            node.adjacent.extend_from_slice(&links);
+            node.adjacent.sort_unstable();
+            node.adjacent.dedup();
+            node.adjacent_batch = self.batches;
+            node.tree_links = links;
+        }
+    }
+
+    /// Builds the neighbor list of `x` for this batch unless it is built already: the states
+    /// within the connection radius and the tree links, sorted. Pruned states have none.
+    pub(super) fn ensure_adjacent(&mut self, x: usize) {
+        if self.nodes[x].adjacent_batch == self.batches {
+            return;
+        }
+
+        let mut near = core::mem::take(&mut self.nodes[x].adjacent);
+        near.clear();
+
+        if self.nodes[x].kind != Kind::Pruned {
+            self.query_neighbors(x, &mut near);
+            near.extend_from_slice(&self.nodes[x].tree_links);
+            near.sort_unstable();
+            near.dedup();
+        }
+
+        let node = &mut self.nodes[x];
+        node.adjacent = near;
+        node.adjacent_batch = self.batches;
+    }
+
+    /// Replaces `out` with the batch neighbors of `id` under the batch rule, without `id`
+    /// itself and without edges longer than `max_radius`.
+    fn query_neighbors(&self, id: usize, out: &mut Vec<usize>) {
+        let cap = self.config.bit.max_radius;
+        let keep = |x| x != id && (cap.is_infinite() || self.cost_estimate(id, x) <= cap);
+
+        self.neighborhood
+            .query(&self.space, &self.nn, &self.nodes[id].state, keep, out);
     }
 
     /// The admissible edge cost estimate `c_hat = d(from, to)`.

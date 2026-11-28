@@ -41,6 +41,8 @@ where
     /// Queues the reverse edges from `source` to its neighbors, except `skip` and neighbors
     /// whose admissible solution cost cannot beat the current solution.
     fn expand_reverse(&mut self, source: usize, skip: Option<usize>) {
+        self.ensure_adjacent(source);
+
         for index in 0..self.nodes[source].adjacent.len() {
             let target = self.nodes[source].adjacent[index];
 

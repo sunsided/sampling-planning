@@ -109,6 +109,7 @@ where
         self.reverse_queue.pop();
         self.nodes[x].reverse_key = None;
 
+        self.ensure_adjacent(x);
         let neighbors = core::mem::take(&mut self.nodes[x].adjacent);
         let node = &mut self.nodes[x];
         let overconsistent = node.h_con < node.h_exp;
@@ -168,6 +169,7 @@ where
             return;
         }
 
+        self.ensure_adjacent(x);
         let h_con = self.nodes[x]
             .adjacent
             .iter()
