@@ -387,17 +387,23 @@ pairs. Edges are direct motions along `interpolate`.
   current rule and run Dijkstra (ties by `total_cmp`, then node id); the
   direct start-to-center motion is tried when the center is within the
   start's reach (the radius, or the distance of its `k`-th neighbor).
-- Many queries: `query` takes `&mut self` because a lazy roadmap caches
-  edge verdicts. `query_shared(&self)` gives the same answer through a shared
-  reference, keeping lazy verdicts per query, and `query_with(&self,
-  &mut QueryWorkspace, ...)` does so in reusable buffers (Dijkstra's arrays
-  and heap in `graph::Dijkstra`, the verdicts, the neighbor buffer), so an
-  entity that plans repeatedly stops allocating them. `query_batch` (feature
+- Many queries: `query(&mut self)` keeps its buffers in the roadmap;
+  `query_shared(&self)` gives the same answer through a shared reference, and
+  `query_with(&self, &mut QueryWorkspace, ...)` does so in reusable buffers
+  (Dijkstra's arrays and heap in `graph::Dijkstra`, the neighbor buffer), so
+  an entity that plans repeatedly stops allocating them. Lazy verdicts live in
+  the roadmap for all three: each edge's status is an `AtomicU8` written with
+  relaxed ordering, so shared and concurrent queries record and reuse them
+  (two threads checking one edge store the same verdict). `query_batch` (feature
   `parallel`) answers many queries on threads, one workspace per thread, in
   input order, so many entities can plan on one roadmap, as `solve_batch` does
   in `heuristic-search`.
 - Lazy PRM stores edges unchecked and checks the edges of each candidate
-  path at query time. It returns the eager cost for the same samples.
+  path at query time (LazySP: check the shortest path's unchecked edges in
+  order, drop the first invalid one, search again). It returns the eager cost
+  for the same samples and checks only edges on candidate paths; each invalid
+  edge found costs one more Dijkstra search, so with a cheap checker and many
+  queries an eager roadmap answers faster.
 - Roadmap edges are traveled both ways but checked once, from the older to
   the newer node; that assumes a symmetric `check_motion`.
   `check_both_directions` is the switch for directional checkers.

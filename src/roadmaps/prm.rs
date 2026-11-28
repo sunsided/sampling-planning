@@ -1,6 +1,7 @@
 //! PRM, PRM* and lazy PRM: multi-query probabilistic roadmaps.
 
-use alloc::{collections::BTreeMap, vec::Vec};
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU8, Ordering};
 
 use rand_core::Rng;
 
@@ -126,6 +127,7 @@ impl PrmConfig {
 
 /// Whether a roadmap edge has been collision-checked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 enum EdgeStatus {
     /// Checked and valid.
     Valid,
@@ -135,8 +137,19 @@ enum EdgeStatus {
     Unchecked,
 }
 
+impl EdgeStatus {
+    /// The status stored as `value` by [`Edge::set_status`].
+    const fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::Valid,
+            1 => Self::Invalid,
+            _ => Self::Unchecked,
+        }
+    }
+}
+
 /// An undirected roadmap edge.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct Edge {
     /// The older endpoint.
     a: usize,
@@ -144,8 +157,36 @@ struct Edge {
     b: usize,
     /// The edge length under [`StateSpace::distance`].
     cost: f64,
-    /// Whether the edge was checked, and how.
-    status: EdgeStatus,
+    /// Whether the edge was checked, and how: an [`EdgeStatus`] as `u8`.
+    ///
+    /// Atomic so that queries through a shared reference record lazy verdicts in the roadmap,
+    /// also from several threads at once (`Prm::query_batch`). Relaxed ordering suffices: two
+    /// threads that check the same edge with a deterministic checker store the same verdict,
+    /// and a thread that has not seen it yet only checks the edge once more.
+    status: AtomicU8,
+}
+
+impl Edge {
+    /// The edge's check status.
+    fn status(&self) -> EdgeStatus {
+        EdgeStatus::from_u8(self.status.load(Ordering::Relaxed))
+    }
+
+    /// Records the edge's check status.
+    fn set_status(&self, status: EdgeStatus) {
+        self.status.store(status as u8, Ordering::Relaxed);
+    }
+}
+
+impl Clone for Edge {
+    fn clone(&self) -> Self {
+        Self {
+            a: self.a,
+            b: self.b,
+            cost: self.cost,
+            status: AtomicU8::new(self.status() as u8),
+        }
+    }
 }
 
 /// A probabilistic roadmap: a graph of valid sampled states connected by valid motions, built
@@ -153,7 +194,7 @@ struct Edge {
 ///
 /// [`Prm::grow`] adds samples, [`Prm::query`] connects a start and a goal region to the roadmap
 /// and runs Dijkstra. Queries do not change the roadmap, except that a lazy roadmap remembers
-/// which edges it has checked. With [`Connection::Star`] the roadmap is PRM*, whose query cost
+/// which edges it has checked, for every later query, also through a shared reference. With [`Connection::Star`] the roadmap is PRM*, whose query cost
 /// converges to the optimum as it grows.
 ///
 /// PRM needs no [`Steering`](crate::Steering): edges are direct motions along
@@ -225,8 +266,6 @@ pub struct Prm<Sp: StateSpace, Sa, C, N = LinearScan<<Sp as StateSpace>::State>>
 pub struct QueryWorkspace {
     /// The Dijkstra buffers.
     dijkstra: Dijkstra,
-    /// Lazy-edge verdicts of the running query, by edge id.
-    verdicts: BTreeMap<usize, bool>,
     /// Neighbor query results.
     near: Vec<usize>,
 }
@@ -383,7 +422,7 @@ where
             a,
             b,
             cost: self.space.distance(&self.states[a], &self.states[b]),
-            status,
+            status: AtomicU8::new(status as u8),
         });
         self.incident[a].push(edge);
         self.incident[b].push(edge);
@@ -446,33 +485,19 @@ where
         start: &Sp::State,
         goal: &GoalRegion<Sp::State>,
     ) -> Result<Option<Path<Sp::State>>, Error> {
-        let validity = self.checker.check_state(start);
-        if !validity.is_valid() {
-            return Err(Error::InvalidStart(validity));
-        }
-
         let mut workspace = core::mem::take(&mut self.workspace);
-        let ends = self.connect_endpoints(start, goal, &mut workspace.near);
-        let result = loop {
-            let Some(route) = self.search(&ends, goal, |_| false, &mut workspace.dijkstra) else {
-                break None;
-            };
-
-            if self.confirm_lazy_edges(&route) {
-                break Some(self.to_path(&route, start, goal));
-            }
-        };
-
+        let result = self.query_with(&mut workspace, start, goal);
         self.workspace = workspace;
-        Ok(result)
+
+        result
     }
 
     /// The same as [`Prm::query`], through a shared reference, so that many queries can run on
     /// one roadmap at once (see `Prm::query_batch`, feature `parallel`).
     ///
-    /// A lazy roadmap checks the unchecked edges of each candidate path like [`Prm::query`],
-    /// but keeps the verdicts for this query only, so repeated shared queries check them
-    /// again; the result is the same.
+    /// A lazy roadmap checks the unchecked edges of each candidate path like [`Prm::query`]
+    /// and records the verdicts in the roadmap, so later and concurrent queries reuse them.
+    /// The result is the same as from [`Prm::query`].
     ///
     /// # Errors
     ///
@@ -502,18 +527,13 @@ where
         }
 
         let ends = self.connect_endpoints(start, goal, &mut workspace.near);
-        let QueryWorkspace {
-            dijkstra, verdicts, ..
-        } = workspace;
-        verdicts.clear();
 
         loop {
-            let rejected = |id: usize| verdicts.get(&id) == Some(&false);
-            let Some(route) = self.search(&ends, goal, rejected, dijkstra) else {
+            let Some(route) = self.search(&ends, goal, &mut workspace.dijkstra) else {
                 return Ok(None);
             };
 
-            if self.confirm_route_edges(&route, verdicts) {
+            if self.confirm_lazy_edges(&route) {
                 return Ok(Some(self.to_path(&route, start, goal)));
             }
         }
@@ -570,15 +590,13 @@ where
         self.checker.check_motion(&self.space, from, to).is_valid()
     }
 
-    /// Dijkstra from the start over the roadmap, skipping edges known to be invalid and edges
-    /// whose id `rejected` holds for.
+    /// Dijkstra from the start over the roadmap, skipping edges known to be invalid.
     ///
     /// Node ids: roadmap nodes `0..n`, the start `n`, the goal center `n + 1`.
     fn search(
         &self,
         ends: &Endpoints,
         goal: &GoalRegion<Sp::State>,
-        rejected: impl Fn(usize) -> bool,
         dijkstra: &mut Dijkstra,
     ) -> Option<Route> {
         let n = self.states.len();
@@ -605,7 +623,7 @@ where
                     edge: None,
                 }));
             } else if node < n {
-                self.roadmap_arcs(node, &rejected, out);
+                self.roadmap_arcs(node, out);
 
                 if ends.to_center[node].is_finite() {
                     out.push(Arc {
@@ -620,13 +638,12 @@ where
         dijkstra.run(n + 2, start, is_goal, arcs)
     }
 
-    /// Appends the arcs along the roadmap edges of `node` that are neither invalid nor
-    /// `rejected` by the query.
-    fn roadmap_arcs(&self, node: usize, rejected: impl Fn(usize) -> bool, out: &mut Vec<Arc>) {
+    /// Appends the arcs along the roadmap edges of `node` that are not known to be invalid.
+    fn roadmap_arcs(&self, node: usize, out: &mut Vec<Arc>) {
         for &id in &self.incident[node] {
             let edge = &self.edges[id];
 
-            if edge.status != EdgeStatus::Invalid && !rejected(id) {
+            if edge.status() != EdgeStatus::Invalid {
                 let to = if edge.a == node { edge.b } else { edge.a };
                 out.push(Arc {
                     to,
@@ -637,43 +654,22 @@ where
         }
     }
 
-    /// Checks the unchecked roadmap edges along `route` in travel order. Returns whether all are
-    /// valid; marks the first invalid one and stops there otherwise.
-    fn confirm_lazy_edges(&mut self, route: &Route) -> bool {
+    /// Checks the unchecked roadmap edges along `route` in travel order and records each
+    /// verdict in the roadmap. Returns whether all are valid; stops at the first invalid one.
+    fn confirm_lazy_edges(&self, route: &Route) -> bool {
         for (step, edge) in route.edges.iter().enumerate() {
             let Some(id) = *edge else { continue };
 
-            if self.edges[id].status != EdgeStatus::Unchecked {
+            if self.edges[id].status() != EdgeStatus::Unchecked {
                 continue;
             }
 
             let valid = self.is_route_step_valid(route, step);
-            self.edges[id].status = if valid {
+            self.edges[id].set_status(if valid {
                 EdgeStatus::Valid
             } else {
                 EdgeStatus::Invalid
-            };
-
-            if !valid {
-                return false;
-            }
-        }
-
-        true
-    }
-
-    /// [`Prm::confirm_lazy_edges`] for a shared roadmap: the verdicts go into the query's own
-    /// `verdicts` by edge id instead of the roadmap.
-    fn confirm_route_edges(&self, route: &Route, verdicts: &mut BTreeMap<usize, bool>) -> bool {
-        for (step, edge) in route.edges.iter().enumerate() {
-            let Some(id) = *edge else { continue };
-
-            if self.edges[id].status != EdgeStatus::Unchecked || verdicts.contains_key(&id) {
-                continue;
-            }
-
-            let valid = self.is_route_step_valid(route, step);
-            verdicts.insert(id, valid);
+            });
 
             if !valid {
                 return false;
@@ -728,7 +724,7 @@ where
     pub fn edge_count(&self) -> usize {
         self.edges
             .iter()
-            .filter(|edge| edge.status != EdgeStatus::Invalid)
+            .filter(|edge| edge.status() != EdgeStatus::Invalid)
             .count()
     }
 }

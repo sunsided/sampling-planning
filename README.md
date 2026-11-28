@@ -59,8 +59,9 @@ sampling-planning = "0.1"
   PRM, SPARS (sparse roadmap spanner over a dense PRM* graph), SPARS2 (without one);
   multi-query, with Dijkstra queries on a reusable roadmap, also through a shared reference with a
   reusable query workspace and, with feature `parallel`, in batches on several threads; with
-  feature `parallel` a roadmap is also built on several threads. Shared queries on a lazy
-  roadmap re-check its unchecked edges every time, so many queries favor an eager roadmap.
+  feature `parallel` a roadmap is also built on several threads. A lazy roadmap checks edges
+  only on candidate paths and remembers every verdict for later queries, shared and
+  concurrent ones included.
 - Batch-informed planners: BIT* (radius or k-nearest, informed batches, pruning), ABIT*
   (inflated and truncated BIT* searches), AIT* (BIT*-style forward search guided by a lazy LPA*
   reverse search that is repaired on every invalid edge) and EIT* (effort-guided forward search
