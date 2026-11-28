@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/sunsided/sampling-planning/compare/v0.2.0...v0.3.0) - 2026-11-28
+
+### Added
+
+- Add VpTree, an exact nearest-neighbor index for any metric space
+
+### Changed
+
+- Test that AIT*/EIT* eager and lazy batch graphs agree
+- Carry AIT* and EIT* radius neighbor lists across batches
+- Keep the eager batch graph for asymmetric spaces, test VpTree on SE(2)
+- Size AIT* and EIT* batch graphs by the informed set, as OMPL
+- Build AIT* and EIT* neighbor lists lazily per batch
+- Remember lazy PRM verdicts across shared queries
+
 ## [0.2.0](https://github.com/sunsided/sampling-planning/compare/v0.1.1...v0.2.0) - 2026-11-28
 
 ### Added
