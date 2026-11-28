@@ -236,10 +236,6 @@ fn zero_neighbors_are_rejected() {
     );
 }
 
-/// The optimal slalom cost to the goal center itself, rounded down: [`SLALOM_OPTIMUM`] plus the
-/// goal tolerance. BFMT*'s goal tree ends every path through it at the center.
-const SLALOM_CENTER_OPTIMUM: f64 = 19.155;
-
 /// BFMT* on the slalom with `samples` samples, a fixed seed and the given termination.
 fn bfmt_slalom(samples: usize, seed: u64, termination: Termination) -> Option<Path<[f64; 2]>> {
     bfmt_slalom_to(&slalom().goal, samples, seed, termination)
@@ -293,7 +289,7 @@ fn bfmt_star_finds_valid_paths_and_improves_with_larger_batches() {
             small.cost
         );
         assert!(
-            large.cost < SLALOM_CENTER_OPTIMUM * 1.05,
+            large.cost < SLALOM_OPTIMUM * 1.05,
             "seed {seed}: {}",
             large.cost
         );
@@ -317,6 +313,41 @@ fn bfmt_star_matches_fmt_star_and_first_meetings_cost_more() {
             (optimal.cost - fmt.cost).abs() < 0.02 * fmt.cost,
             "seed {seed}: BFMT* {} vs FMT* {}",
             optimal.cost,
+            fmt.cost
+        );
+    }
+}
+
+#[test]
+fn bfmt_star_matches_fmt_star_on_a_goal_region() {
+    for seed in 1..4 {
+        // Free space: the cheapest path ends on the region's rim, not at its center.
+        let goal = GoalRegion::new([9.0, 9.0], 2.0);
+        let world = || crate::world::problem(Boxes::default());
+        let config = BfmtStarConfig {
+            gamma: BfmtStarConfig::gamma_lower_bound(2, 100.0),
+            termination: Termination::Optimal,
+        };
+        let w = world();
+        let mut bfmt = BfmtStar::new(w.space, w.sampler, w.checker, config).expect("valid");
+        let bfmt = bfmt
+            .plan(&w.start, &goal, 2000, &mut Pcg64Mcg::seed_from_u64(seed))
+            .expect("valid endpoints")
+            .expect("solved");
+        let w = world();
+        let config = FmtStarConfig {
+            gamma: FmtStarConfig::gamma_lower_bound(2, 100.0),
+        };
+        let mut fmt = FmtStar::new(w.space, w.sampler, w.checker, config).expect("valid");
+        let fmt = fmt
+            .plan(&w.start, &goal, 2000, &mut Pcg64Mcg::seed_from_u64(seed))
+            .expect("valid start")
+            .expect("solved");
+
+        assert!(
+            bfmt.cost < fmt.cost * 1.02,
+            "seed {seed}: BFMT* {} vs FMT* {}",
+            bfmt.cost,
             fmt.cost
         );
     }

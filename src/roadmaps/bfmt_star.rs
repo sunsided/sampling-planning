@@ -68,7 +68,7 @@ impl BfmtStarConfig {
 enum Side {
     /// The tree rooted at the start; edges traveled away from the root.
     Start,
-    /// The tree rooted at the goal center; edges traveled toward the root.
+    /// The tree rooted at the goal-region nodes; edges traveled toward the roots.
     Goal,
 }
 
@@ -79,12 +79,9 @@ struct Connection {
     node: usize,
     /// The total cost.
     cost: f64,
-    /// Whether the path continues through the goal tree to the goal center; `false` when
-    /// `node` itself lies in the goal region.
-    through_goal_tree: bool,
 }
 
-/// BFMT*: marches one tree outward from the start and one inward from the goal center over the
+/// BFMT*: marches one tree outward from the start and one inward from the goal region over the
 /// same batch, alternating expansions, and joins them where they meet (Starek, Gomez,
 /// Schmerling, Janson, Moreno and Pavone 2015).
 ///
@@ -95,8 +92,9 @@ struct Connection {
 /// other tree's wavefront is empty. [`Termination`] decides when to stop.
 ///
 /// Goal-tree edges are traveled toward the goal, so they are checked from child to parent,
-/// which keeps directional checkers sound. The goal center must be valid. A start-tree node
-/// inside the goal region is also a solution, ending there.
+/// which keeps directional checkers sound. The goal center must be valid. The goal tree is
+/// rooted at every batch node inside the goal region, the center included, each at cost zero,
+/// so the path ends wherever in the region is cheapest, as with [`FmtStar`](super::FmtStar).
 ///
 /// Like [`FmtStar`](super::FmtStar) it is asymptotically optimal and checks each motion at most
 /// once; growing two trees from both ends typically settles fewer nodes.
@@ -196,7 +194,7 @@ where
     }
 
     /// Draws `samples` states, keeps the valid ones, and marches from both `start` and the
-    /// center of `goal` until [`Termination`] says to stop.
+    /// nodes in `goal` (its center among them) until [`Termination`] says to stop.
     ///
     /// Returns `None` if both wavefronts die out without a connection.
     ///
@@ -240,6 +238,7 @@ where
     }
 
     /// Marches both trees over `states`: node `0` is the start, the last node the goal center.
+    /// The goal tree starts from every node in the goal region.
     fn march(
         &self,
         states: Vec<Sp::State>,
@@ -253,16 +252,19 @@ where
             self.nn.clone(),
         );
         let n = batch.len();
+        let roots: Vec<usize> = (1..n)
+            .filter(|&node| goal.contains(batch.space, &batch.states[node]))
+            .collect();
         let mut march = Bidirectional {
-            start: Wave::new(n, 0, Direction::Outward),
-            goal: Wave::new(n, n - 1, Direction::Inward),
+            start: Wave::new(n, &[0], Direction::Outward),
+            goal: Wave::new(n, &roots, Direction::Inward),
             best: None,
         };
         let mut side = Side::Start;
 
         while let Some(z) = march.wave_mut(side).peek_open() {
             let fresh = march.wave_mut(side).expand(&mut batch, z);
-            march.record_connections(&batch, goal, side, &fresh);
+            march.record_connections(&fresh);
 
             if self.should_stop(&march, side, z) {
                 break;
@@ -287,7 +289,7 @@ where
 struct Bidirectional {
     /// The tree rooted at the start.
     start: Wave,
-    /// The tree rooted at the goal center.
+    /// The tree rooted at the goal-region nodes.
     goal: Wave,
     /// The cheapest solution found so far.
     best: Option<Connection>,
@@ -319,40 +321,26 @@ impl Bidirectional {
         }
     }
 
-    /// Records the solutions through the nodes just connected on `side`: nodes held by both
-    /// trees, and start-tree nodes inside the goal region.
-    fn record_connections<Sp: StateSpace, C, N>(
-        &mut self,
-        batch: &Batch<'_, Sp, C, N>,
-        goal: &GoalRegion<Sp::State>,
-        side: Side,
-        fresh: &[usize],
-    ) {
+    /// Records the solutions through the nodes just connected: nodes held by both trees. A
+    /// start-tree node in the goal region is one, since it roots the goal tree.
+    fn record_connections(&mut self, fresh: &[usize]) {
         for &x in fresh {
             if self.goal.status[x] != Status::Unvisited && self.start.status[x] != Status::Unvisited
             {
-                self.offer(x, self.start.cost[x] + self.goal.cost[x], true);
-            }
-
-            if side == Side::Start && goal.contains(batch.space, &batch.states[x]) {
-                self.offer(x, self.start.cost[x], false);
+                self.offer(x, self.start.cost[x] + self.goal.cost[x]);
             }
         }
     }
 
     /// Keeps the solution through `node` if it is cheaper than the best so far.
-    fn offer(&mut self, node: usize, cost: f64, through_goal_tree: bool) {
+    fn offer(&mut self, node: usize, cost: f64) {
         if self.best.is_none_or(|best| cost < best.cost) {
-            self.best = Some(Connection {
-                node,
-                cost,
-                through_goal_tree,
-            });
+            self.best = Some(Connection { node, cost });
         }
     }
 
-    /// The states of the solution `best`: the start-tree branch to its node, then, if it goes
-    /// through the goal tree, the goal-tree branch to the goal center.
+    /// The states of the solution `best`: the start-tree branch to its node, then the
+    /// goal-tree branch on to a goal-region root.
     fn path<Sp: StateSpace, C, N>(
         &self,
         batch: &Batch<'_, Sp, C, N>,
@@ -360,10 +348,7 @@ impl Bidirectional {
     ) -> Path<Sp::State> {
         let mut nodes = self.start.branch(best.node);
         nodes.reverse();
-
-        if best.through_goal_tree {
-            nodes.extend(self.goal.branch(best.node).into_iter().skip(1));
-        }
+        nodes.extend(self.goal.branch(best.node).into_iter().skip(1));
 
         Path {
             states: nodes

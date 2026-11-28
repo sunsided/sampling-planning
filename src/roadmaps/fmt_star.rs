@@ -183,7 +183,7 @@ where
             states,
             self.nn.clone(),
         );
-        let mut wave = Wave::new(batch.len(), 0, Direction::Outward);
+        let mut wave = Wave::new(batch.len(), &[0], Direction::Outward);
 
         while let Some(z) = wave.peek_open() {
             if goal.contains(&self.space, &batch.states[z]) {
