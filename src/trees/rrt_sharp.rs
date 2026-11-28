@@ -122,8 +122,6 @@ pub struct RrtSharp<Sp: StateSpace, Sa, C, St, N = LinearScan<<Sp as StateSpace>
     nn: N,
     /// Vertices with `lmc < g`, keyed by `lmc + h` at push time; stale entries are skipped.
     queue: BinaryHeap<Entry>,
-    /// Vertices inside the goal region.
-    goal_vertices: Vec<usize>,
     /// The goal vertex with the lowest committed cost `g`, if any is reached.
     best_goal: Option<usize>,
     /// Reused buffer for neighbor queries.
@@ -193,7 +191,6 @@ where
                 parent: None,
                 out: Vec::new(),
             }],
-            goal_vertices: if in_goal { alloc::vec![0] } else { Vec::new() },
             best_goal: in_goal.then_some(0),
             problem,
             config,
@@ -236,11 +233,14 @@ where
         let from = &self.vertices[nearest].state;
         let new = self.problem.steering.steer(space, from, &target);
 
-        self.problem
-            .checker
-            .check_motion(space, from, &new)
-            .is_valid()
-            .then_some((nearest, new))
+        // A zero-length step (the target is already a vertex) would only add a duplicate.
+        (space.distance(from, &new) > 0.0
+            && self
+                .problem
+                .checker
+                .check_motion(space, from, &new)
+                .is_valid())
+        .then_some((nearest, new))
     }
 
     /// The informed-set bound `c_best + tolerance`, or `None` when informed sampling is off or
@@ -284,10 +284,6 @@ where
         });
         self.link(id, nearest, &near);
         self.choose_parent(id);
-
-        if self.problem.goal.contains(&self.problem.space, &state) {
-            self.goal_vertices.push(id);
-        }
 
         self.nn.insert(id, state);
         self.near = near;
@@ -548,7 +544,7 @@ mod tests {
         let route = shortest_path(
             vertices.len(),
             0,
-            |id| planner.goal_vertices.contains(&id),
+            |id| planner.problem.goal.contains(&space, &vertices[id].state),
             |id, out: &mut Vec<Arc>| {
                 out.clear();
                 out.extend(

@@ -117,6 +117,13 @@ where
         draw_target(&mut self.problem, self.goal_bias, None, rng)
     }
 
+    /// Whether the extension from node `from` to `to` moves and checks as valid. A zero-length
+    /// step (the target is already in the tree) would only add a duplicate node.
+    pub(super) fn is_extension_valid(&self, from: usize, to: &Sp::State) -> bool {
+        self.problem.space.distance(self.tree.state(from), to) > 0.0
+            && self.is_motion_valid(from, to)
+    }
+
     /// Whether the motion from node `from` to `to` checks as valid. Unknown counts as invalid.
     pub(super) fn is_motion_valid(&self, from: usize, to: &Sp::State) -> bool {
         self.problem

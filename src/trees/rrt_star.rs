@@ -280,7 +280,7 @@ where
     pub fn step<R: Rng + ?Sized>(&mut self, rng: &mut R) -> bool {
         let target = self.draw_target(rng);
         let (nearest, new) = self.growth.propose_toward(&target);
-        let valid = self.growth.is_motion_valid(nearest, &new);
+        let valid = self.growth.is_extension_valid(nearest, &new);
 
         if valid {
             let mut near = core::mem::take(&mut self.near);

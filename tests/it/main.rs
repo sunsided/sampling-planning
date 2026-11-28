@@ -381,3 +381,29 @@ fn rrt_sharp_variants_match_across_indices_and_stay_valid() {
         assert_eq!(Some(path), kd.best_path());
     }
 }
+
+#[test]
+fn reaching_the_goal_center_again_adds_no_duplicate_nodes() {
+    let free = || problem(Boxes::default());
+    let mut rng = Pcg64Mcg::seed_from_u64(1);
+    // Every target is the goal center, about 11.3 steps away: once reached, steps stand still.
+    let mut rrt = Rrt::new(free(), RrtConfig { goal_bias: 1.0 }).expect("valid problem");
+    rrt.run(1000, &mut rng);
+    assert!(rrt.node_count() < 20, "RRT: {} nodes", rrt.node_count());
+
+    let config = RrtStarConfig {
+        goal_bias: 1.0,
+        ..star_config()
+    };
+    let mut star = RrtStar::new(free(), config).expect("valid problem");
+    star.run(1000, &mut rng);
+    assert!(star.node_count() < 20, "RRT*: {} nodes", star.node_count());
+
+    let mut sharp = RrtSharp::new(free(), config).expect("valid problem");
+    sharp.run(1000, &mut rng);
+    assert!(
+        sharp.node_count() < 20,
+        "RRT#: {} nodes",
+        sharp.node_count()
+    );
+}

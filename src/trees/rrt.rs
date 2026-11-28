@@ -80,7 +80,7 @@ where
     /// Runs one iteration. Returns whether a node was added.
     pub fn step<R: Rng + ?Sized>(&mut self, rng: &mut R) -> bool {
         let (nearest, new) = self.growth.propose(rng);
-        let valid = self.growth.is_motion_valid(nearest, &new);
+        let valid = self.growth.is_extension_valid(nearest, &new);
 
         if valid {
             let cost = self.growth.cost_via(nearest, &new);

@@ -48,8 +48,9 @@ struct Half<S, N> {
 /// passages near the endpoints, but, like RRT, does not improve them; run
 /// [`shortcut`](crate::shortcut()) on the result.
 ///
-/// The goal tree is rooted at [`GoalRegion::center`](crate::GoalRegion::center), so the
-/// returned path ends there. Its edges are traveled toward the root, so they are checked in that
+/// The goal tree is rooted at [`GoalRegion::center`](crate::GoalRegion::center), so a path
+/// found where the trees meet ends there; a path whose start-tree branch enters the goal region
+/// first ends at that branch's state in the region. Its edges are traveled toward the root, so they are checked in that
 /// direction: a new goal-tree state gets [`ValidityChecker::check_state`] and then
 /// [`ValidityChecker::check_motion`] from itself to its parent.
 ///
@@ -248,7 +249,9 @@ where
         let space = &self.problem.space;
         let tree = &self.half(side).tree;
         let new = self.problem.steering.steer(space, tree.state(from), target);
-        let valid = self.is_edge_valid(side, from, &new);
+        // A zero-length step (steering stopped short) would only add a duplicate node.
+        let valid =
+            space.distance(tree.state(from), &new) > 0.0 && self.is_edge_valid(side, from, &new);
         let half = match side {
             Side::Start => &mut self.start,
             Side::Goal => &mut self.goal,
@@ -268,20 +271,39 @@ where
     }
 
     /// Greedily steers `side` toward node `target` of tree `target_side` until it reaches the
-    /// node (and records the solution) or an edge is not valid.
+    /// node (and records the solution), an edge is not valid or a step gets no closer.
     fn connect(&mut self, side: Side, target: usize, target_side: Side) {
         let goal = self.half(target_side).tree.state(target).clone();
         let mut current = self.nearest(side, &goal);
+        let mut gap = self
+            .problem
+            .space
+            .distance(self.half(side).tree.state(current), &goal);
+
+        // A node already at the target meets it; a zero-length step would not be added.
+        if gap <= 0.0 {
+            self.record_meeting(side, current, target);
+            return;
+        }
 
         while let Some(next) = self.step_from(side, current, &goal) {
-            let reached = self.half(side).tree.state(next);
+            let reached = self
+                .problem
+                .space
+                .distance(self.half(side).tree.state(next), &goal);
 
-            if self.problem.space.distance(reached, &goal) <= 0.0 {
+            if reached <= 0.0 {
                 self.record_meeting(side, next, target);
                 return;
             }
 
+            // Steering that gets no closer (a lattice bouncing around the target) never meets.
+            if reached >= gap {
+                return;
+            }
+
             current = next;
+            gap = reached;
         }
     }
 
@@ -436,6 +458,26 @@ mod tests {
                 discretized_motion(space, from, to, 0.1, |_| Validity::Valid)
             }
         }
+    }
+
+    #[test]
+    fn trees_meet_where_a_node_already_sits_on_the_target() {
+        // Every sample is the start: the goal tree reaches it in one long step, and the start
+        // tree's root, already there, must count as the meeting.
+        let problem = Problem {
+            space: Euclidean::<1>,
+            sampler: UniformBox::new([1.0], [1.0]),
+            checker: OneWay,
+            steering: StraightLine::new(100.0),
+            start: [1.0],
+            goal: GoalRegion::new([9.0], 0.1),
+        };
+        let mut planner = RrtConnect::new(problem).expect("valid");
+        let path = planner
+            .solve(10, &mut rand_pcg::Pcg64Mcg::seed_from_u64(1))
+            .expect("the trees meet at the start");
+
+        assert_eq!(path.states, [[1.0], [9.0]]);
     }
 
     #[test]
